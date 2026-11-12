@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.vite/
+.venv/
+__pycache__/
+*.pyc
+*.blend1
+*.oso
+*.log
+.DS_Store
+Thumbs.db
