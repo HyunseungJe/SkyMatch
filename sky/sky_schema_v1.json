@@ -1,0 +1,181 @@
+{
+  "schema": "sky",
+  "version": "1.0-draft",
+  "status": "draft: 동결 전. 대량 데이터 생성과 실사진 라벨링 직전에 동결한다.",
+  "base": "sky/skyV1.glsl (skyV1 대기 + R8 구름. 대기 부분은 lcfSRl 포팅, MIT)",
+  "contract": {
+    "output": "선형 HDR radiance (Linear Rec.709). 톤매핑·노출·감마는 셰이더 밖(웹은 world_post, Blender는 AgX, Unity는 프로젝트 설정).",
+    "input": "단위 시선 방향 하나. 카메라·해상도에 의존하지 않는다. iTime은 구름 이동과 오로라 흐름에만 쓴다(정지 평가에서는 0).",
+    "entryPoint": "skyV1_radiance(rd)",
+    "functions": {
+      "base": "skyV1_base(rd) = v0 대기(변경 없음). v1 항: skyV1_moonSky, skyV1_moonDisk, skyV1_stormOpen, skyV1_tint, skyV1_clouds(rgb+opacity), skyV1_aerial(haze, rain)",
+      "effects": "skyV1_effects(rd) → nightEffect에 따라 skyV1_milkyWay(rd) 또는 skyV1_aurora(rd). 더해지는 선형 radiance를 돌려준다",
+      "order": "base + moonSky → stormOpen → + 태양 원반 → tint → + 별, 달 원반, 야간 효과 → 구름(opacity로 덮음, 구름 색도 tint) → haze 베일 → 비 안개"
+    },
+    "skySpace": "Y-up. 태양 방향 = (sin(az)cos(el), sin(el), cos(az)cos(el)). 달도 같은 식(moonElevation, moonAzimuth).",
+    "engineAxes": {
+      "web": "sky = (x, y, z) 그대로",
+      "blender": "sky = (bx, bz, by). 방위각 0° = Blender +Y(북), 90° = +X(동). 나침반 방위와 같다.",
+      "godot": "sky = (gx, gy, -gz). 방위각 0° = Godot -Z(북)",
+      "unity": "sky = (x, y, z) 그대로 (Unity도 Y-up, 방위각 0° = +Z)"
+    },
+    "angles": "도(degree)",
+    "neutral": "haze = storm = cloudSoftness = tintStrength = moonBrightness = 0, nightEffect = 0이면 v1 = v0 (8개 v0 프리셋 × 피치 3개에서 8비트 차이 최대 1)"
+  },
+  "params": {
+    "sunElevation":   { "role": "regress", "unit": "deg", "min": -12, "max": 60, "default": 8, "label": "Sun Elevation", "note": "시간대. 핵심 파라미터" },
+    "turbidity":      { "role": "regress", "scale": "log", "min": 0.3, "max": 8, "default": 1.4, "label": "Turbidity", "note": "v1에서 의미를 좁힘: 태양빛 소광(노을 붉기·산란 색)만. 뿌연 하늘은 haze" },
+    "haze":           { "role": "regress", "min": 0, "max": 1, "default": 0, "label": "Haze", "note": "새 항목. 회색 에어로졸 베일: 하늘 백화, 넓은 태양 헤일로, 밝은 먼지 지평선. 색은 turbidity로 붉어진 태양빛에서 유도" },
+    "cloudCover":     { "role": "regress", "min": 0, "max": 1, "default": 0.4, "label": "Cloud Cover" },
+    "cloudDensity":   { "role": "regress", "scale": "log", "min": 0.2, "max": 5, "default": 1.2, "label": "Cloud Density", "mask": "cloudCover < 0.05", "note": "밝은 구름 ↔ 먹구름" },
+    "cloudScale":     { "role": "regress", "scale": "log", "min": 0.5, "max": 8, "default": 2.4, "label": "Cloud Scale", "mask": "cloudCover < 0.05" },
+    "cloudSoftness":  { "role": "regress", "min": 0, "max": 1, "default": 0, "label": "Cloud Softness", "mask": "cloudCover < 0.05", "note": "새 항목. 0 = v0 적운(또렷), 1 = 층운(부드럽고 가로로 늘어남, 세부 옥타브·명암 감소)" },
+    "storm":          { "role": "regress", "min": 0, "max": 1, "default": 0, "label": "Storm", "mask": "cloudCover < 0.05 (비 안개 항은 cover와 무관하게 보이므로 cover < 0.05일 때도 약하게 남는다)", "note": "새 항목. 회색 천장, 어두운 셀(밀도 증가), 얇은 가장자리의 빛, 열린 하늘 회색화, 지평선 비 안개" },
+    "tintHue":        { "role": "regress", "min": 0, "max": 1, "default": 0.33, "label": "Tint Hue", "mask": "tintStrength < 0.05", "note": "새 항목. 고정 램프 위 위치: 0 시안, 1/3 골드, 2/3 로즈, 1 바이올렛. 중립은 램프 위 점이 아니라 tintStrength = 0" },
+    "tintStrength":   { "role": "regress", "min": 0, "max": 1, "default": 0, "label": "Tint Strength", "note": "새 항목. 0 = 중립(정확히 항등)" },
+    "stars":          { "role": "regress", "min": 0, "max": 2, "default": 0.8, "label": "Stars", "activeWhen": "sunElevation < -6" },
+    "nightEffect":    { "role": "classify", "type": "categorical", "values": { "0": "none", "1": "milkyWay", "2": "aurora" }, "default": 0, "label": "Night Effect", "activeWhen": "sunElevation < -6", "note": "분류 출력. 셰이더에서는 int uniform. 뷰어에는 select 컨트롤이 없어 0~2 정수 슬라이더로 표시" },
+    "milkyWayBrightness": { "role": "regress", "min": 0, "max": 2, "default": 1, "label": "Milky Way Brightness", "activeWhen": "nightEffect == 1 && sunElevation < -6", "note": "효과 1 전용" },
+    "auroraIntensity":    { "role": "regress", "min": 0, "max": 3, "default": 1.2, "label": "Aurora Intensity", "activeWhen": "nightEffect == 2 && sunElevation < -6", "note": "효과 2 전용" },
+    "auroraHue":          { "role": "regress", "min": 0, "max": 1, "default": 0.5, "label": "Aurora Hue", "activeWhen": "nightEffect == 2 && sunElevation < -6 && auroraIntensity > 0.1", "note": "0 초록, 0.5 초록 + 보라 윗단, 1 붉은/마젠타" },
+
+    "sunAzimuth":     { "role": "artist", "unit": "deg", "min": -180, "max": 180, "default": 20, "label": "Sun Azimuth", "note": "회귀하지 않음. 사진에서는 노을 위치 감지로 대신하고, 툴에서는 사용자가 돌린다" },
+    "moonElevation":  { "role": "artist", "unit": "deg", "min": -10, "max": 80, "default": 25, "label": "Moon Elevation" },
+    "moonAzimuth":    { "role": "artist", "unit": "deg", "min": -180, "max": 180, "default": -150, "label": "Moon Azimuth" },
+    "moonBrightness": { "role": "artist", "min": 0, "max": 2, "default": 0, "label": "Moon Brightness", "note": "0 = 달 없음. 밤에는 하늘 전체를 약간 밝히고(레일리 파랑), 달 주변 광륜, 구름 윗면, 은하수 씻김에 작용" },
+    "exposure":       { "role": "nuisance", "min": 0.03, "max": 6, "default": 1, "label": "Exposure", "note": "셰이더 밖에서 곱한다. 추정은 하되 θ 평가에서 제외" },
+    "time":           { "role": "artist", "unit": "s", "default": 0, "label": "Time", "note": "구름 이동·오로라 흐름 전용. 정지 이미지 평가에서는 0" },
+    "cloudSpeed":     { "role": "artist", "min": 0, "max": 2, "default": 0.12, "label": "Cloud Speed", "note": "정지 사진에서 보이지 않으므로 사용자 파라미터" },
+    "cloudWindDirection": { "role": "artist", "unit": "deg", "min": -180, "max": 180, "default": 0, "label": "Cloud Wind Direction", "note": "v0 구름 이동 벡터를 이 각도만큼 회전. 0 = v0과 동일" },
+    "horizonWarmth":  { "role": "artist", "min": 0, "max": 1, "default": 0, "label": "Horizon Warmth", "note": "후보 → 사용자 파라미터(2026-11-11). 노을 색은 turbidity·tintHue·tintStrength가 회귀로 담당하므로, 함께 회귀하면 같은 노을을 여러 조합으로 만들 수 있다(해가 여러 개). 툴에서 노을을 더 따뜻하게 다듬는 손잡이로 남긴다" },
+    "milkyWayTilt":    { "role": "artist", "unit": "deg", "min": 0, "max": 90, "default": 58, "label": "Milky Way Tilt", "note": "v1 고정값 galaxyTilt를 사용자 파라미터로" },
+    "milkyWayAzimuth": { "role": "artist", "unit": "deg", "min": -180, "max": 180, "default": 12, "label": "Milky Way Azimuth", "note": "v1 고정값 galaxyRotation을 사용자 파라미터로" },
+    "milkyWayWidth":   { "role": "artist", "min": 0.5, "max": 2, "default": 1, "label": "Milky Way Width", "note": "띠 위도 좌표를 이 값으로 나눔: 띠·먼지 줄기·띠 별이 함께 넓어진다" },
+    "auroraAzimuth":   { "role": "artist", "unit": "deg", "min": -180, "max": 180, "default": 0, "label": "Aurora Azimuth", "note": "커튼 중심 방향. 커튼 이음매는 반대편으로 간다" },
+    "auroraSpread":    { "role": "artist", "unit": "deg", "min": 60, "max": 360, "default": 360, "label": "Aurora Spread", "note": "좌우 퍼짐 각. 360 = 하늘 전체(기존과 동일). 미만이면 1 − smoothstep(0.6·half, half, |Δaz|) 마스크" },
+    "auroraHeight":    { "role": "artist", "min": 0.2, "max": 0.8, "default": 0.45, "label": "Aurora Height", "note": "v1 고정값 auroraHeight를 사용자 파라미터로 (rad 단위 기준선 배율)" },
+    "auroraSpeed":     { "role": "artist", "min": 0, "max": 2, "default": 0.35, "label": "Aurora Speed", "note": "v1 고정값 auroraSpeed를 사용자 파라미터로" }
+  },
+  "roleSummary": {
+    "rule": "사진에서 보이는 '느낌'(색·밝기·양·질감)은 회귀, 위치·각도·크기 같은 기하와 움직임은 사용자. 위치는 카메라 방향에 따라 달라지고, 움직임은 정지 사진에 없다",
+    "regress": ["sunElevation", "turbidity", "haze", "tintHue", "tintStrength", "cloudCover", "cloudDensity", "cloudScale", "cloudSoftness", "storm"],
+    "regressNight": ["stars", "milkyWayBrightness", "auroraIntensity", "auroraHue"],
+    "classify": ["nightEffect"],
+    "artist": ["sunAzimuth", "moonElevation", "moonAzimuth", "moonBrightness", "time", "cloudSpeed", "cloudWindDirection", "horizonWarmth", "milkyWayTilt", "milkyWayAzimuth", "milkyWayWidth", "auroraAzimuth", "auroraSpread", "auroraHeight", "auroraSpeed"],
+    "nuisance": ["exposure"]
+  },
+  "effects": {
+    "selector": "nightEffect",
+    "fade": "effect × (1 − smoothstep(EFFECT_FADE_LO, EFFECT_FADE_HI, sunElevation)), 즉 -3°에서 0, -8°에서 1",
+    "occlusion": "효과는 구름 합성 전에 더해지므로 구름 opacity만큼 가려진다 (= effect × 구름 투과율). haze 베일도 그 위에 덮인다",
+    "list": {
+      "milkyWay": {
+        "id": 1, "function": "skyV1_milkyWay(rd)", "params": ["milkyWayBrightness"],
+        "artistParams": ["milkyWayTilt", "milkyWayAzimuth", "milkyWayWidth"],
+        "note": "은하 띠(먼지 줄기·코어) + 띠를 따라 모인 별. 기본 별(stars)과 별도로 더한다. 달빛으로 1/(1 + 0.6·moonLight)만큼 씻긴다",
+        "source": "이 저장소의 milkyWay.js(원작 구현, mrange stBcW1의 CC0 시각 연구, 코드 미사용)를 옮김. fwidth → 고정 footprint 0.12, world_fbm 루프 → 고정 3/4 옥타브 전개"
+      },
+      "aurora": {
+        "id": 2, "function": "skyV1_aurora(rd)", "params": ["auroraIntensity", "auroraHue"],
+        "artistParams": ["auroraAzimuth", "auroraSpread", "auroraHeight", "auroraSpeed"],
+        "fixedGeometry": { "curtainDensity": 1.15 },
+        "note": "레이마칭 없음: (방위각, 고도) 공간의 해석적 커튼 4장. 각 장은 접힌 기준선, 날카로운 아랫단, 위로 지수 감쇠, 세로 광선 줄무늬",
+        "source": "이 저장소의 aurora.js(원작 각도 커튼 구성)를 옮김. nimitz XtGGRt(CC BY-NC-SA 3.0)는 시각 참고였고 코드는 쓰지 않음"
+      }
+    }
+  },
+  "mappings": {
+    "haze": {
+      "veil": "v = 1 − exp(−haze · (0.24 + 2.2 · exp(−4.5 · up)))",
+      "color": "L = T(sun) · daylight; L = mix(L, luma(L), 0.3); hazeColor = L · (1, 0.95, 0.88) · (HAZE_ISO + HAZE_HALO · halo · (0.6 + 0.4·haze)) + 밤 바닥값 + 2·moonSky",
+      "halo": "s = |rd − sun| (현의 길이), halo = 1.4·exp(−s/0.10) + 0.45·exp(−s²/0.30) + 0.5·exp(−s/0.7)",
+      "apply": "color = mix(color, tint(hazeColor), v) + tint(hazeColor) · haze · 0.4 · exp(−up/0.045) (빛나는 지평선)",
+      "sun": "태양 원반 × exp(−2.2·haze), 장면 키라이트 × exp(−0.7·haze)",
+      "vsTurbidity": "turbidity는 Mie 소광 계수(betaM)만 바꿔 태양빛과 노을을 붉게 한다(파장 의존). haze는 회색 베일이고 색은 그 붉어진 빛에서 온다(파장 무관 백화). 낮에 turbidity 8은 여전히 파랗고 haze 0.8은 우윳빛이며, 해 질 녘 turbidity 6은 짙은 주황 띠, haze 0.8은 금빛 먼지 하늘이 된다 (v1_shots/sweep_haze_vs_turbidity.png)"
+    },
+    "tint": {
+      "ramp": "h ∈ [0,1]을 3구간 smoothstep으로 키 4개 사이 보간",
+      "horizonKeys": { "cyan": [0.62, 1.02, 1.25], "gold": [1.38, 0.97, 0.50], "rose": [1.38, 0.76, 0.86], "violet": [1.00, 0.76, 1.45] },
+      "zenithKeys":  { "cyan": [0.70, 0.98, 1.25], "gold": [1.22, 0.90, 0.88], "rose": [1.06, 0.84, 1.28], "violet": [0.88, 0.80, 1.40] },
+      "spatial": "t(up) = mix(horizonKey, zenithKey, smoothstep(0, 0.55, up)) / luma(...)",
+      "apply": "c' = mix(c, mix(c·t, luma(c)·t, 0.55), tintStrength). 하늘, 구름 색, haze 색, 비 안개, 장면 조명(키 up=0.15, 앰비언트 up=0.3)에 적용. 별·달·야간 효과에는 적용하지 않음",
+      "why": "지평선과 천정의 키가 달라서 단순 화이트밸런스(방해 변수)와 구별된다. 자유 RGB는 없음 (4.3 원칙 2)"
+    },
+    "storm": {
+      "cells": "cells = smoothstep(0.42, 0.78, 0.7·noise(p·0.31) + 0.3·coarse); density' = cloudDensity · (1 + storm·(1 + 3·cells))",
+      "deck": "회색 천장 (0.17, 0.20, 0.245) · cloudLight · 기복 · (1 − 0.85·cells·storm) · (1 − 0.6·body·storm); 얇은 가장자리에 빛 (gapLight · edge · shape · (1 − cells) · 태양 쪽 가중)",
+      "mix": "cloud = mix(v0Cloud, deck, storm)",
+      "openSky": "color = mix(color, luma · (0.90, 0.98, 1.10) · 1.1, 0.5·storm)",
+      "rain": "r = storm · (1 − exp(−1.8·exp(−7·up))); color = mix(color, tint(mist), 0.85·r)"
+    },
+    "cloudSoftness": "경계 폭 확장(shape: −0.22·s / +0.28·s, body: −0.15·s / +0.30·s), p.y × (1 + 1.4·s)로 가로 층 모양, 세부 옥타브 × (1 − 0.85·s), 기복 명암 → 0.62로 0.75·s만큼",
+    "moon": "moonLight = moonBrightness · smoothstep(−3, 3, moonElevation). 밤 하늘 + (0.0035, 0.0075, 0.018)·(0.75 + 0.25·μ²)·(0.6 + 0.4·exp(−2.5·up)) + 광륜, 모두 × moonLight × night. 별 ÷ (1 + 0.9·moonLight·night)"
+  },
+  "fixed": {
+    "rayleigh": 1.0,
+    "ozone": 1.0,
+    "brightness": 1.0,
+    "cloudHeight": 0.8,
+    "nightLight": 1.0,
+    "zenithTint": [1, 1, 1],
+    "horizonTint": [1, 1, 1],
+    "twilightCyan": 0.0,
+    "warmSpread": 1.0,
+    "horizonWhite": 0.0,
+    "afterglowPink": 0.0,
+    "hazeIso": 0.55,
+    "hazeHalo": 0.55,
+    "moonRadius": 0.009,
+    "effectFadeLo": -8.0,
+    "effectFadeHi": -3.0,
+    "auroraCurtainDensity": 1.15
+  },
+  "fixedWidthConstants": {
+    "pixelAngle": { "value": 0.0012, "unit": "rad", "replaces": "fwidth: 태양·달 원반 가장자리, 구름 세부 페이드(해석적 footprint × pixelAngle)", "assumes": "세로 FOV 60°, 약 900 px" },
+    "starSpread": { "value": 0.012, "replaces": "기본 별의 fwidth 기반 크기" },
+    "galaxyStarFootprint": { "value": 0.12, "replaces": "milkyWay.js의 max(fwidth(face)·scale, 0.12)" },
+    "sunRadius": { "value": 0.00436, "unit": "rad" }
+  },
+  "scope": {
+    "in": ["맑은 낮", "연무·먼지 낀 낮(haze)", "골든아워", "노을", "블루아워", "초저녁·밤(별)", "구름 양·두께·크기·부드러움", "흐림·폭풍(storm)", "분위기 색(골드·로즈·바이올렛·시안 tint)", "달밤(artist 달)", "은하수(효과 1)", "오로라(효과 2)"],
+    "partial": ["goldenHaze의 아주 밝은 파스텔 핑크 노을(태양 아래 하늘이 물리적으로 붉고 어두워 색상은 맞지만 밝은 파스텔은 안 됨)", "moodSky의 보라 밤 띠", "physSky 낮은 태양에서 파란 천정 + 주황 띠 동시 표현(v0 특성상 위쪽이 탁해짐)", "stormSky의 유방운 질감과 아주 밝은 구름 틈"],
+    "out": ["비·눈·번개", "정확한 태양 위치 추정", "달 위상", "은하수·오로라 기하 추정(기하는 사용자 파라미터)"]
+  },
+  "portabilityRules": [
+    "fwidth/dFdx/dFdy 금지: 필요하면 고정 폭 사용 (fixedWidthConstants)",
+    "텍스처: 스크립트로 생성한 공용 2D 노이즈 텍스처만 허용 (sky/textures/noise256.png, tools/make_noise_texture.py). 3D 텍스처 금지, Linear·Repeat·mipmap 없음, 읽기는 함수 하나(skyV1_noiseTex3)에 모은다. Blender와 Unity는 (u,-v) 좌표로 읽는다. 구름 레이마칭(최대 96단계, 조기 종료)만 반복 상한의 예외. 그 외 노이즈는 해시 함수로 직접 계산",
+    "반복문은 고정 횟수, 상한 16회 (v1 실제 최대: 오로라 4장, 은하 별 2층. fbm은 펼쳐 씀)",
+    "uniform은 위 params만 (+ iTime). 상수는 fixed에서. nightEffect는 int uniform",
+    "출력은 선형 HDR. 톤매핑·감마 금지",
+    "엔진 변환은 진입부 한 곳(방향 축 변환)에서만",
+    "기본 하늘과 효과는 별도 함수: skyV1_base / skyV1_clouds / skyV1_aerial / skyV1_milkyWay / skyV1_aurora → 포트에서 1:1 대응"
+  ],
+  "changelog": {
+    "from": "0.1-draft (sky_schema_v0.json)",
+    "added": [
+      "haze (regress): 에어로졸 백화 + 넓은 헤일로 + 빛나는 지평선. turbidity를 대체하지 않고 보완",
+      "cloudSoftness (regress), storm (regress): stormSky와 층운 표현 흡수",
+      "tintHue, tintStrength (regress): 자유 RGB 대신 1차원 램프 + 세기. goldenHaze·moodSky 색감",
+      "moonElevation, moonAzimuth, moonBrightness (artist)",
+      "nightEffect (classify) + milkyWayBrightness, auroraIntensity, auroraHue (regress, 조건부 활성)",
+      "effects, mappings, fixedWidthConstants 섹션"
+    ],
+    "changed": [
+      "turbidity 라벨·의미: '연무·먼지 전체' → '산란 색·노을 붉기'. 뿌연 하늘은 haze로 분리",
+      "2026-11-12 구름 교체: R8(viewer/world/layers/skyV1CloudSoft.js)이 구름 기준. 파라미터는 그대로이고 cloudDensity가 낮으면 희미한 반투명 구름이 된다. 이식 규칙에 공용 2D 노이즈 텍스처 허용을 추가",
+      "2026-11-11 역할 정리: horizonWarmth 후보 → artist. 은하수 기울기·방위·폭, 오로라 방향·퍼짐·높이·속도, 구름 바람 방향을 artist 파라미터로 추가(기본값에서 기존 화면과 동일). 오로라 줄무늬 촘촘함만 고정값으로 남김",
+      "scope: 달·은하수·오로라를 later/out에서 in으로"
+    ],
+    "kept": [
+      "v0의 모든 파라미터와 고정값. 아무것도 지우거나 합치지 않음",
+      "horizonWarmth 코드는 그대로 (역할만 artist로 변경)"
+    ],
+    "removed": []
+  },
+  "openQuestions": [
+    "tintHue는 원형 램프가 아니라 선분(시안~바이올렛). 시안과 바이올렛이 이웃해야 할지 결정 필요",
+    "nightEffect 같은 범주형은 현재 fit.js 최적화에서 정수 반올림 연속 변수로 다뤄진다. 분류 헤드/범주별 재피팅이 필요",
+    "haze 0.6 이상은 낮 하늘을 거의 흰색으로 만든다. 실사진 분포를 보고 범위를 0~0.8로 좁힐지 결정",
+    "storm 마스크: 비 안개 항은 cloudCover와 무관하므로 storm을 cover로 마스킹할지, 비 안개를 별도 파라미터로 떼어 낼지"
+  ]
+}
