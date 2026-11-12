@@ -1,6 +1,7 @@
 import { runBench } from './bench';
-import { presetNames, presetParams, type SkyParams } from './sky/schema';
+import { defaultParams, presetNames, presetParams, type SkyParams } from './sky/schema';
 import { SkyView } from './sky/SkyView';
+import { createParamPanel, type ParamPanel } from './ui/paramPanel';
 
 // URL options (all optional): ?preset=sunset&yaw=20&pitch=12&time=0&bench=1
 const query = new URLSearchParams(location.search);
@@ -13,30 +14,49 @@ const queryNumber = (key: string): number | null => {
 
 const canvas = document.querySelector<HTMLCanvasElement>('#sky')!;
 const presetSelect = document.querySelector<HTMLSelectElement>('#preset')!;
+const resetButton = document.querySelector<HTMLButtonElement>('#reset')!;
+const paramsElement = document.querySelector<HTMLElement>('#params')!;
 const stats = document.querySelector<HTMLSpanElement>('#stats')!;
 const status = document.querySelector<HTMLDivElement>('#status')!;
 const benchOutput = document.querySelector<HTMLPreElement>('#bench')!;
 
 const view = new SkyView(canvas);
 
-let theta: SkyParams;
+let theta: SkyParams = defaultParams();
 let yaw = 0;
 let pitch = 12;
 let yawFollowsSun = queryNumber('yaw') === null;
 
+// Shown in the preset list once a slider has moved away from the preset.
+const CUSTOM = '';
+let basePreset = 'golden hour';
+let panel: ParamPanel | null = null;
+
 function selectPreset(name: string): void {
+  basePreset = name;
   theta = presetParams(name);
   view.setParams(theta);
+  panel?.sync(theta);
   // Until the user looks around, face the sun so the preset's mood is in view.
   if (yawFollowsSun) yaw = theta.sunAzimuth;
   presetSelect.value = name;
 }
 
+const customOption = new Option('(직접 조정)', CUSTOM);
+customOption.hidden = true;
+presetSelect.add(customOption);
 for (const name of presetNames) presetSelect.add(new Option(name, name));
-presetSelect.addEventListener('change', () => selectPreset(presetSelect.value));
+presetSelect.addEventListener('change', () => {
+  if (presetSelect.value !== CUSTOM) selectPreset(presetSelect.value);
+});
+resetButton.addEventListener('click', () => selectPreset(basePreset));
 
 const requestedPreset = query.get('preset');
-selectPreset(requestedPreset && presetNames.includes(requestedPreset) ? requestedPreset : 'golden hour');
+selectPreset(requestedPreset && presetNames.includes(requestedPreset) ? requestedPreset : basePreset);
+panel = createParamPanel(paramsElement, theta, () => {
+  view.setParams(theta);
+  presetSelect.value = CUSTOM;
+});
 yaw = queryNumber('yaw') ?? yaw;
 pitch = queryNumber('pitch') ?? pitch;
 
