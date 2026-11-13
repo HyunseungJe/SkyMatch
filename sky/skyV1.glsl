@@ -12,7 +12,7 @@ uniform float u_sky_tintHue=0.110000000;
 uniform float u_sky_tintStrength=0.000000000;
 uniform float u_sky_cloudCover=0.400000000;
 uniform float u_sky_cloudDensity=1.200000000;
-uniform float u_sky_cloudScale=2.400000000;
+uniform float u_sky_cloudScale=1.000000000;
 uniform float u_sky_cloudSoftness=0.000000000;
 uniform float u_sky_storm=0.000000000;
 uniform float u_sky_stars=0.800000000;
@@ -99,6 +99,7 @@ float world_fbm3(vec3 p, int octaves) {
 // ---- Schema v1 "fixed" values -----------------------------------------------
 // v0 fixed values are unchanged (see skyV0.js; folded away as identities).
 const float SKYV1_CLOUD_HEIGHT = 0.8;
+const float SKYV1_CLOUD_PLANET = 150.0; // planet radius in cloud units (stylized curvature)
 // Fixed-width replacements for fwidth(): angular sizes assume roughly one
 // pixel at a 60 deg vertical FOV on a ~900 px viewport (0.0012 rad).
 const float SKYV1_PIXEL_ANGLE = 0.0012;
@@ -345,7 +346,7 @@ float skyV1_cloudDensityAt(vec3 p, float lod, vec2 drift, float bottom, float th
   q.y *= mix(1.0,0.45,soft); // stratus: stretched, layered
   float field = skyV1_cloudField(q,lod);
   // Local coverage: global cover modulated by the weather map.
-  float cover = clamp(u_sky_cloudCover+(weather-0.5)*mix(0.9,0.35,max(soft,storm))*(1.0-smoothstep(0.75,1.0,u_sky_cloudCover)),0.0,1.0);
+  float cover = clamp(u_sky_cloudCover+(weather-0.5)*mix(0.6,0.3,max(soft,storm))*(1.0-smoothstep(0.75,1.0,u_sky_cloudCover)),0.0,1.0);
   // Cumulus profile: flat base, rounded tops (threshold rises with height).
   // Stratus: thin uniform slab.
   float baseRamp = smoothstep(0.0,mix(0.06,0.25,soft),h);
@@ -355,6 +356,11 @@ float skyV1_cloudDensityAt(vec3 p, float lod, vec2 drift, float bottom, float th
   d = clamp(d,0.0,1.0)*baseRamp*(1.0-smoothstep(0.92,1.0,h));
   return d;
 }
+// Distance along a ray (sine of elevation mu) to altitude h above a round planet.
+float skyV1_cloudShell(float mu, float h) {
+  float r = SKYV1_CLOUD_PLANET;
+  return sqrt(r*r*mu*mu+2.0*r*h+h*h)-r*mu;
+}
 float skyV1_cloudHG(float mu, float g) {
   return (1.0-g*g)/pow(max(1.0+g*g-2.0*g*mu,1e-3),1.5);
 }
@@ -362,9 +368,11 @@ float skyV1_cloudHG(float mu, float g) {
 vec4 skyV1_clouds(vec3 rd, vec3 sun) {
   if (rd.y <= 0.008) return vec4(0.0);
   float storm = u_sky_storm, soft = u_sky_cloudSoftness;
-  float bottom = mix(1.55,1.10,storm);
+  float bottom = mix(2.6,1.9,storm);
   float thickness = mix(2.2,0.9,soft)+0.8*storm;
-  float t = bottom/rd.y, end = min((bottom+thickness)/rd.y,60.0);
+  // The layer follows the planet's curve: distant clouds sink toward the
+  // horizon at a finite distance instead of running on forever.
+  float t = skyV1_cloudShell(rd.y,bottom), end = skyV1_cloudShell(rd.y,bottom+thickness);
   if (t >= end) return vec4(0.0);
   float wind = radians(u_sky_cloudWindDirection);
   vec2 drift = vec2(0.028,0.009);
@@ -390,6 +398,10 @@ vec4 skyV1_clouds(vec3 rd, vec3 sun) {
   float twilight = 1.0-smoothstep(-4.0,4.0,u_sky_sunElevation);
   vec3 ambTop = (skyUp*0.9+skyAround*0.35)*(1.0-0.35*twilight);
   vec3 ambBottom = (skyAround*0.22+skyUp*0.08)*(1.0-0.45*twilight); // underside: horizon ring and ground
+  // A cloud gathers light from the whole dome and the sunlit ground, so its
+  // shade is paler and less blue than the sky itself.
+  ambTop = mix(ambTop,vec3(dot(ambTop,SKYV1_LUMA))*1.25,0.5);
+  ambBottom = mix(ambBottom,vec3(dot(ambBottom,SKYV1_LUMA)),0.5)+sunLight*0.10*max(lightDir.y,0.0)*(1.0-night);
   ambTop = skyV1_stormOpen(ambTop); ambBottom = skyV1_stormOpen(ambBottom);
   // Sky directly behind the cloud, for aerial perspective.
   vec3 behind = skyV1_stormOpen(skyV1_base(rd)+skyV1_moonSky(rd));
@@ -404,6 +416,8 @@ vec4 skyV1_clouds(vec3 rd, vec3 sun) {
     if (t >= end || trans < 0.01) break;
     float stepLength = min(0.035+0.012*t,end-t);
     vec3 p = rd*(t+0.5*stepLength);
+    // Work in layer coordinates: y = altitude above the curved ground.
+    p.y = length(p+vec3(0.0,SKYV1_CLOUD_PLANET,0.0))-SKYV1_CLOUD_PLANET;
     float lod = 1.0-smoothstep(4.0,30.0,t*max(u_sky_cloudScale/2.4,0.5));
     float weather = skyV1_cloudWeather((p.xz+drift)*u_sky_cloudScale*0.42);
     float density = skyV1_cloudDensityAt(p,lod,drift,bottom,thickness,weather);
@@ -417,8 +431,10 @@ vec4 skyV1_clouds(vec3 rd, vec3 sun) {
       // Single scattering keeps the forward peak (silver edges); the multiple-
       // scattering tail is nearly isotropic, so thick backlit cores stay dark.
       float single = exp(-tau)*phase;
-      float multi = 0.14*exp(-tau*0.35);
-      float powder = mix(1.0,1.0-exp(-density*sigma*0.8),0.6);
+      // Bright fair-weather clouds glow from within; grey decks do not.
+      float grey = max(storm,soft*smoothstep(0.8,1.0,u_sky_cloudCover));
+      float multi = mix(1.25,0.14,grey)*exp(-tau*mix(0.16,0.35,grey));
+      float powder = mix(1.0,1.0-exp(-density*sigma*0.8),0.3);
       float h = clamp((p.y-bottom)/thickness,0.0,1.0);
       // Sky light reaching this point is dimmed by the cloud column above it.
       // Diffusion keeps even a thick deck's base grey, never black.
@@ -438,7 +454,7 @@ vec4 skyV1_clouds(vec3 rd, vec3 sun) {
       float cellDark = smoothstep(0.30,0.58,cellField);
       S *= 1.0-deck*(0.40+0.40*storm)*cellDark;
       // Aerial perspective: distant clouds melt into the sky behind them.
-      float fog = 1.0-exp(-t*(0.020+0.020*u_sky_haze+0.004*u_sky_turbidity));
+      float fog = 1.0-exp(-t*(0.032+0.020*u_sky_haze+0.004*u_sky_turbidity));
       S = mix(S,behind,fog);
       // Energy-conserving integration of a slab (albedo 1).
       float ext = sigma*density;
