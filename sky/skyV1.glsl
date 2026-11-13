@@ -484,12 +484,14 @@ vec2 skyV1_face(vec3 rd, out float seed) {
   seed = rd.z > 0.0 ? 79.0 : 97.0; return rd.xy/a.z;
 }
 // Stars clustered along the galactic band (on top of the base stars).
-vec3 skyV1_galaxyStars(vec3 rd, float latitude) {
+// g is the direction in the galactic frame, so they turn with the band.
+vec3 skyV1_galaxyStars(vec3 g, float latitude, float richness) {
   float seed;
-  vec2 face = skyV1_face(rd,seed);
-  float clustering = exp(-latitude*latitude/0.035);
+  vec2 face = skyV1_face(g,seed);
+  // Dense in the band, thinning out gradually far from it (never empty).
+  float clustering = (0.75*exp(-latitude*latitude/0.035)+0.40*exp(-abs(latitude)/0.40))*richness+0.10;
   vec3 stars = vec3(0.0);
-  for (int j = 0; j < 2; ++j) {
+  for (int j = 0; j < 3; ++j) {
     float layer = float(j), scale = 115.0+layer*118.0;
     vec2 p = (face*0.5+0.5)*scale;
     vec2 cell = floor(p)+seed*19.0+layer*307.0;
@@ -499,48 +501,73 @@ vec3 skyV1_galaxyStars(vec3 rd, float latitude) {
     float footprint = SKYV1_GALAXY_STAR_FOOTPRINT;
     float area = 0.0035+footprint*footprint*0.12;
     float point = exp(-dot(delta,delta)/area)*0.0035/area;
-    point *= step(h,0.7*(0.012+0.14*clustering)*(1.0+layer*0.5));
+    point *= step(h,0.7*(0.012+0.20*clustering)*(1.0+layer*0.5));
     vec3 tint = mix(vec3(0.56,0.72,1.0),vec3(1.0,0.78,0.53),world_hash12(cell+41.0));
     float luminosity = world_hash12(cell+67.0);
     stars += tint*point*(0.035+3.5*pow(luminosity,10.0));
   }
   return stars*1.35;
 }
-// Effect 1: Milky Way band with dust lanes (fixed tilt/rotation).
+// Four fixed octaves of the shared texture noise.
+float skyV1_galaxyFbm(vec3 p) {
+  float v = 0.5*skyV1_noiseTex3(p); p = p*2.03+vec3(17.1,3.3,9.7);
+  v += 0.25*skyV1_noiseTex3(p); p = p*2.07+vec3(5.9,21.3,13.1);
+  v += 0.125*skyV1_noiseTex3(p); p = p*2.11+vec3(11.7,7.1,29.3);
+  v += 0.0625*skyV1_noiseTex3(p);
+  return v/0.9375;
+}
+// Effect 1: Milky Way (original code). Everything is computed in a galactic
+// frame (x toward the core, z = galactic pole), so tilt/azimuth turn the band,
+// its dust and its stars together. A band that swells into a warm bulge at the
+// core, star clouds, a meandering central rift with dust filaments that redden
+// what shines through, and a grain of unresolved stars.
 vec3 skyV1_milkyWay(vec3 rd) {
   float t = radians(u_sky_milkyWayTilt), a = radians(u_sky_milkyWayAzimuth);
   vec3 forward = vec3(sin(a),0.0,cos(a));
   vec3 side = vec3(cos(a),0.0,-sin(a));
   vec3 normal = side*sin(t)+vec3(0,1,0)*cos(t);
   vec3 across = cross(normal,forward);
-  // milkyWayWidth scales every across-band structure (band, rifts, stars).
-  float latitude = dot(rd,normal)/max(u_sky_milkyWayWidth,0.05);
-  float along = dot(rd,forward);
-  vec3 p = vec3(dot(rd,side),rd.y,along)*8.0+vec3(21.0,8.0,3.0);
-  float grain = skyV1_fbm3(p);
-  float ribbon = latitude+(grain-0.5)*0.13;
-  float band = exp(-ribbon*ribbon/0.018);
-  float core = pow(max(dot(rd,normalize(forward+across*0.24)),0.0),14.0);
-  vec2 track = vec2(along,dot(rd,across));
-  track = track/max(length(track),0.001)*3.0+vec2(23.0,11.0);
-  float slow = world_noise2(track);
-  float curl = world_noise2(track*2.7+21.0);
-  float center = (slow-0.5)*0.28+(curl-0.5)*0.07;
-  float width = 0.012+0.060*pow(world_noise2(track*1.6-4.0),1.8);
-  float segment = smoothstep(0.28,0.56,world_noise2(track*2.1+32.0));
-  float mottling = skyV1_fbm2(track*2.2+vec2(latitude*19.0,latitude*7.0)+vec2(3.0,7.0));
-  float rift = latitude-center+(mottling-0.5)*0.045;
-  float mainDust = (1.0-smoothstep(width*0.30,width*1.45,abs(rift)))*segment;
-  float branchCenter = center+(world_noise2(track*1.3+37.0)-0.5)*0.24;
-  float branchWidth = width*0.50+0.008;
-  float branchDust = (1.0-smoothstep(branchWidth*0.25,branchWidth*1.5,
-    abs(latitude-branchCenter+(mottling-0.5)*0.03)))*smoothstep(0.50,0.70,curl);
-  float patches = smoothstep(0.54,0.72,mottling)*exp(-latitude*latitude/0.020);
-  float dust = clamp(mainDust*(0.55+0.45*mottling)+branchDust*0.65+patches*0.75,0.0,0.92);
-  vec3 milk = mix(vec3(0.026,0.036,0.075),vec3(0.15,0.105,0.065),core);
-  milk *= band*(0.35+1.6*grain)*(1.0-0.88*dust);
-  milk += vec3(0.04,0.025,0.023)*core*exp(-latitude*latitude/0.06)*(1.0-0.7*dust);
-  vec3 radiance = milk+skyV1_galaxyStars(rd,latitude);
+  vec3 g = vec3(dot(rd,forward),dot(rd,across),dot(rd,normal));
+  // milkyWayWidth scales every across-band structure (band, rift, stars).
+  float latitude = g.z/max(u_sky_milkyWayWidth,0.05);
+  vec3 gw = vec3(g.xy,latitude);
+  float toCore = g.x/max(length(g.xy),0.001); // cos(galactic longitude)
+  float inner = 0.5+0.5*toCore;               // 1 toward the core, 0 opposite
+  float bulge = pow(max(toCore,0.0),9.0)*exp(-latitude*latitude/0.05);
+  // Band: ragged edges, thicker and brighter toward the core.
+  float coarse = skyV1_galaxyFbm(gw*2.6+vec3(21.0,8.0,3.0));
+  float clouds = skyV1_galaxyFbm(gw*6.5+vec3(4.0,31.0,12.0));
+  float sigma = mix(0.075,0.150,inner*inner);
+  float ribbon = latitude+(coarse-0.5)*0.16;
+  float band = 0.72*exp(-ribbon*ribbon/(2.0*sigma*sigma))+0.28*exp(-ribbon*ribbon/(13.0*sigma*sigma));
+  float along = mix(0.20,1.0,pow(inner,1.6));
+  float starClouds = smoothstep(0.30,0.72,clouds);
+  float glow = band*along*(0.30+1.55*starClouds*starClouds);
+  // Dust: a central rift that wanders, plus filaments stretched along the band.
+  vec3 gd = vec3(g.xy,latitude*3.4);
+  float lanes = skyV1_galaxyFbm(gd*4.2+vec3(9.0,2.0,17.0));
+  float wisps = skyV1_galaxyFbm(gd*10.5+vec3(33.0,14.0,6.0));
+  float riftCentre = (coarse-0.5)*0.22+(lanes-0.5)*0.10;
+  float riftWidth = 0.022+0.050*inner*smoothstep(0.25,0.75,lanes);
+  float rift = exp(-skyV1_sq((latitude-riftCentre)/riftWidth));
+  float filaments = smoothstep(0.52,0.74,0.6*lanes+0.4*wisps)*exp(-latitude*latitude/(5.0*sigma*sigma));
+  float dust = clamp(rift*(0.55+0.75*wisps)+filaments*0.9,0.0,1.0);
+  dust *= smoothstep(0.05,0.45,inner); // little dust toward the anticentre
+  // Dust removes blue first, so thin dust reddens and thick dust blacks out.
+  vec3 through = exp(-dust*vec3(2.1,2.7,3.6));
+  // Cool arms, warm core.
+  vec3 hue = mix(vec3(0.040,0.056,0.105),vec3(0.150,0.108,0.068),clamp(bulge*1.6+0.25*inner*inner,0.0,1.0));
+  hue = mix(hue,hue*vec3(1.25,0.95,0.85),smoothstep(0.55,0.85,wisps)*0.5);
+  vec3 milk = hue*glow*1.5+vec3(0.070,0.046,0.030)*bulge;
+  // Faint wide halo so the band does not end in a hard edge.
+  milk += vec3(0.006,0.008,0.014)*along*exp(-latitude*latitude/0.10);
+  // Far from the band the sky still carries a mottled glow of distant stars.
+  milk += vec3(0.0045,0.0060,0.0105)*(0.45+0.55*inner)*exp(-abs(latitude)/0.42)*(0.35+2.6*coarse*clouds);
+  // Unresolved stars: fine grain that follows the brightness.
+  float grain = world_noise3(g*430.0);
+  milk *= 0.82+0.60*grain*grain;
+  milk *= through;
+  vec3 radiance = milk+skyV1_galaxyStars(g,latitude,along*(0.5+starClouds))*mix(vec3(1.0),through,0.7);
   // Moonlight washes the faint band out.
   float wash = 1.0/(1.0+skyV1_moonLight()*0.6);
   return radiance*u_sky_milkyWayBrightness*wash*smoothstep(0.0,0.12,rd.y);
@@ -551,40 +578,57 @@ void skyV1_auroraColors(out vec3 lower, out vec3 upper) {
   lower = mix(mix(vec3(0.20,1.0,0.30),vec3(0.10,1.0,0.55),smoothstep(0.0,0.5,h)),vec3(1.0,0.16,0.32),smoothstep(0.5,1.0,h));
   upper = mix(mix(vec3(0.10,0.85,0.45),vec3(0.50,0.24,1.0),smoothstep(0.0,0.5,h)),vec3(0.80,0.06,0.38),smoothstep(0.5,1.0,h));
 }
-// Effect 2: aurora as four analytic angular curtains (no raymarch): each
-// layer is a folded base line in (azimuth, elevation) with a sharp lower edge,
-// exponential upward fade and fine vertical rays.
+// Draw emission in sky angles. Sampling around a unit circle keeps the pattern
+// continuous across north and gives the horizon the same spacing as the upper sky.
 vec3 skyV1_aurora(vec3 rd) {
+  if (rd.y <= 0.0 || u_sky_auroraIntensity <= 0.0) return vec3(0.0);
+  float heading = atan(rd.x,rd.z+1e-8)-radians(u_sky_auroraAzimuth);
+  vec2 arc = vec2(cos(heading),sin(heading));
+  float spread = radians(u_sky_auroraSpread)*0.5;
+  float sector = u_sky_auroraSpread >= 359.5 ? 1.0 :
+      1.0-smoothstep(0.6*spread,spread,acos(clamp(arc.x,-1.0,1.0)));
+  if (sector <= 0.0) return vec3(0.0);
+
+  float time = iTime*u_sky_auroraSpeed*0.08;
+  float altitude = asin(clamp(rd.y,0.0,1.0));
+  float drift = heading + 0.18*sin(time);
+  vec2 path = vec2(cos(drift),sin(drift));
+  float undulation = skyV1_noiseTex3(vec3(path*2.8+8.1,time));
+  // A low sweeping band with a soft underside and a much wider colored veil.
+  float edge = u_sky_auroraHeight-0.22 + 0.14*sin(1.0*drift-0.9)
+      + 0.065*sin(3.0*drift+0.5) + 0.055*(undulation-0.5);
+  float above = altitude-edge;
+  float rise = max(0.0,above);
+  float rayAngle = drift-0.45*rise+0.09*sin(3.0*drift+time+rise);
+  vec2 rayDir = vec2(cos(rayAngle),sin(rayAngle));
+  float body = skyV1_noiseTex3(vec3(rayDir*3.4+17.5,time));
+  float grain = skyV1_noiseTex3(vec3(rayDir*17.0*SKYV1_AURORA_DENSITY+7.8,time*1.4));
+  float width = 0.125+0.16*body;
+  float veil = smoothstep(-0.075,0.035,above)*exp(-rise*rise/(width*width));
   vec3 lower, upper;
   skyV1_auroraColors(lower,upper);
-  // Azimuth relative to auroraAzimuth, wrapped to [-pi, pi): the curtain seam
-  // sits opposite the centre, where auroraSpread < 360 masks it out.
-  float angle = atan(rd.x,rd.z)-radians(u_sky_auroraAzimuth);
-  angle = mod(angle+3.14159265,6.28318531)-3.14159265;
-  float halfSpread = radians(u_sky_auroraSpread)*0.5;
-  float sector = u_sky_auroraSpread >= 359.5 ? 1.0
-    : 1.0-smoothstep(halfSpread*0.6,halfSpread,abs(angle));
-  float elev = asin(clamp(rd.y,-1.0,1.0));
-  float time = iTime*u_sky_auroraSpeed*0.12;
-  vec3 curtains = vec3(0.0);
-  for (int j = 0; j < 4; ++j) {
-    float layer = float(j);
-    float a = angle*(1.6+layer*0.29)+layer*2.3;
-    float fold = sin(a*2.1+time+sin(a*1.3-time*0.7))*0.12;
-    fold += (world_noise2(vec2(a*2.7+time,layer*8.0))-0.5)*0.17;
-    float base = u_sky_auroraHeight*(0.43+layer*0.22)+fold;
-    float h = elev-base;
-    float rise = smoothstep(-0.025,0.025,h);
-    float fade = exp(-max(h,0.0)*(6.5+layer));
-    float ray = pow(0.5+0.5*sin(a*39.0*SKYV1_AURORA_DENSITY+sin(a*8.0+time)*4.0+time*1.5),3.0);
-    float veil = rise*fade*(0.28+0.72*ray);
-    veil *= 0.55+0.45*sin(a*1.7+layer+time*0.4);
-    vec3 hue = mix(lower,upper,clamp(h*3.5+layer*0.1,0.0,1.0));
-    curtains += hue*veil*(0.34/(1.0+layer*0.2));
-  }
-  float up = max(rd.y,0.0);
-  curtains += lower*0.03*exp(-up*6.0);
-  return curtains*sector*u_sky_auroraIntensity*smoothstep(0.0,0.09,rd.y);
+  float spectrum = 1.0-abs(2.0*u_sky_auroraHue-1.0);
+  float blush = smoothstep(-0.15,0.80,sin(drift+0.15));
+  upper = mix(upper,vec3(0.98,0.12,0.56),spectrum*blush);
+  vec3 color = mix(lower,upper,smoothstep(0.018,0.28,rise));
+  vec3 light = color*veil*(0.08+0.64*body)*(0.42+0.72*grain);
+
+  // A wide turning fold sweeps up from the band. Its angular footprint
+  // broadens towards the crown and fades gently into the surrounding sky.
+  float h = altitude-u_sky_auroraHeight+0.45;
+  float turn = 0.02+0.46*sin(3.6*h-0.8)+0.065*sin(6.0*h+time);
+  float across = 2.0*sin(0.5*(drift-turn));
+  float span = 0.065+0.20*smoothstep(0.08,0.92,h);
+  float core = across/span;
+  float fold = exp(-core*core)*smoothstep(0.12,0.38,h);
+  float fringe = (across+span*0.80)/(span*1.8);
+  vec3 crest = mix(lower,vec3(0.012,1.0,0.53),spectrum);
+  float spine = core+0.42+0.12*sin(9.0*h+time);
+  light += (crest*fold*(0.36+0.78*exp(-6.0*spine*spine))
+      + mix(crest,upper,0.57)*exp(-fringe*fringe)*smoothstep(0.14,0.47,h)*0.08)
+      *(0.72+0.28*grain);
+  return light*sector*u_sky_auroraIntensity*smoothstep(0.0,0.08,altitude)
+      *(1.0-smoothstep(1.22,1.55,altitude));
 }
 vec3 skyV1_effects(vec3 rd) {
   float fade = skyV1_effectFade();

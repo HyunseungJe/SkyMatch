@@ -198,3 +198,8 @@ body {
   color: inherit;
   font: inherit;
 }
+
+body.no-ui #panel,
+body.no-ui #params {
+  display: none;
+}

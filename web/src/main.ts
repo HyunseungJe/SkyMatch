@@ -136,3 +136,6 @@ async function start(): Promise<void> {
 }
 
 void start();
+
+// ?ui=0 hides the panels for clean screenshots.
+if (query.get('ui') === '0') document.body.classList.add('no-ui');

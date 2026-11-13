@@ -53,7 +53,7 @@
     "milkyWayWidth":   { "role": "artist", "min": 0.5, "max": 2, "default": 1, "label": "Milky Way Width", "note": "띠 위도 좌표를 이 값으로 나눔: 띠·먼지 줄기·띠 별이 함께 넓어진다" },
     "auroraAzimuth":   { "role": "artist", "unit": "deg", "min": -180, "max": 180, "default": 0, "label": "Aurora Azimuth", "note": "커튼 중심 방향. 커튼 이음매는 반대편으로 간다" },
     "auroraSpread":    { "role": "artist", "unit": "deg", "min": 60, "max": 360, "default": 360, "label": "Aurora Spread", "note": "좌우 퍼짐 각. 360 = 하늘 전체(기존과 동일). 미만이면 1 − smoothstep(0.6·half, half, |Δaz|) 마스크" },
-    "auroraHeight":    { "role": "artist", "min": 0.2, "max": 0.8, "default": 0.45, "label": "Aurora Height", "note": "v1 고정값 auroraHeight를 사용자 파라미터로 (rad 단위 기준선 배율)" },
+    "auroraHeight":    { "role": "artist", "min": 0.2, "max": 0.8, "default": 0.45, "label": "Aurora Height", "note": "빛띠 중심선의 기준 고도각(rad)" },
     "auroraSpeed":     { "role": "artist", "min": 0, "max": 2, "default": 0.35, "label": "Aurora Speed", "note": "v1 고정값 auroraSpeed를 사용자 파라미터로" }
   },
   "roleSummary": {
@@ -72,15 +72,15 @@
       "milkyWay": {
         "id": 1, "function": "skyV1_milkyWay(rd)", "params": ["milkyWayBrightness"],
         "artistParams": ["milkyWayTilt", "milkyWayAzimuth", "milkyWayWidth"],
-        "note": "은하 띠(먼지 줄기·코어) + 띠를 따라 모인 별. 기본 별(stars)과 별도로 더한다. 달빛으로 1/(1 + 0.6·moonLight)만큼 씻긴다",
-        "source": "이 저장소의 milkyWay.js(원작 구현, mrange stBcW1의 CC0 시각 연구, 코드 미사용)를 옮김. fwidth → 고정 footprint 0.12, world_fbm 루프 → 고정 3/4 옥타브 전개"
+        "note": "은하 좌표계(x = 중심 방향, z = 은하 극)에서 계산: 중심으로 갈수록 굵고 따뜻해지는 띠, 별 구름, 굽이치는 중앙 암흑대와 먼지 실(푸른빛부터 흡수), 낱개로 안 보이는 별의 입자감, 띠를 따라 모인 별. 기울기·방위를 바꾸면 띠·먼지·별이 함께 돈다. 기본 별(stars)과 별도로 더한다. 달빛으로 1/(1 + 0.6·moonLight)만큼 씻긴다",
+        "source": "자체 코드(2026-11-13 재작성). 공용 노이즈 텍스처 4옥타브 fBm(고정 전개) + 해시 노이즈. 시각 참고였던 mrange stBcW1(CC0)의 코드는 쓰지 않음"
       },
       "aurora": {
         "id": 2, "function": "skyV1_aurora(rd)", "params": ["auroraIntensity", "auroraHue"],
         "artistParams": ["auroraAzimuth", "auroraSpread", "auroraHeight", "auroraSpeed"],
         "fixedGeometry": { "curtainDensity": 1.15 },
-        "note": "레이마칭 없음: (방위각, 고도) 공간의 해석적 커튼 4장. 각 장은 접힌 기준선, 날카로운 아랫단, 위로 지수 감쇠, 세로 광선 줄무늬",
-        "source": "이 저장소의 aurora.js(원작 각도 커튼 구성)를 옮김. nimitz XtGGRt(CC BY-NC-SA 3.0)는 시각 참고였고 코드는 쓰지 않음"
+        "note": "방위각을 따라 이어지는 빛띠를 고도각에 그린다. 아랫선 위로 뻗는 결의 길이와 밝기가 위치마다 달라진다. auroraHeight는 띠의 기준 고도각을 정한다.",
+        "source": "자체 구현. 하늘 방향에 고정한 각도 기반 오로라."
       }
     }
   },
@@ -144,7 +144,7 @@
   "portabilityRules": [
     "fwidth/dFdx/dFdy 금지: 필요하면 고정 폭 사용 (fixedWidthConstants)",
     "텍스처: 스크립트로 생성한 공용 2D 노이즈 텍스처만 허용 (sky/textures/noise256.png, tools/make_noise_texture.py). 3D 텍스처 금지, Linear·Repeat·mipmap 없음, 읽기는 함수 하나(skyV1_noiseTex3)에 모은다. Blender와 Unity는 (u,-v) 좌표로 읽는다. 구름 레이마칭(최대 96단계, 조기 종료)만 반복 상한의 예외. 그 외 노이즈는 해시 함수로 직접 계산",
-    "반복문은 고정 횟수, 상한 16회 (v1 실제 최대: 오로라 4장, 은하 별 2층. fbm은 펼쳐 씀)",
+    "반복문은 고정 횟수, 상한 16회 (v1 실제 최대: 오로라 16층, 은하 별 3층. fbm은 펼쳐 씀)",
     "uniform은 위 params만 (+ iTime). 상수는 fixed에서. nightEffect는 int uniform",
     "출력은 선형 HDR. 톤매핑·감마 금지",
     "엔진 변환은 진입부 한 곳(방향 축 변환)에서만",
