@@ -8,7 +8,7 @@ uniform float u_sky_sunAzimuth=20.000000000;
 uniform float u_sky_turbidity=1.400000000;
 uniform float u_sky_haze=0.000000000;
 uniform float u_sky_horizonWarmth=0.000000000;
-uniform float u_sky_tintHue=0.330000000;
+uniform float u_sky_tintHue=0.110000000;
 uniform float u_sky_tintStrength=0.000000000;
 uniform float u_sky_cloudCover=0.400000000;
 uniform float u_sky_cloudDensity=1.200000000;
@@ -19,6 +19,7 @@ uniform float u_sky_stars=0.800000000;
 uniform float u_sky_moonElevation=25.000000000;
 uniform float u_sky_moonAzimuth=-150.000000000;
 uniform float u_sky_moonBrightness=0.000000000;
+uniform float u_sky_nightBrightness=1.000000000;
 uniform int u_sky_nightEffect=0;
 uniform float u_sky_milkyWayBrightness=1.000000000;
 uniform float u_sky_auroraIntensity=1.200000000;
@@ -101,7 +102,7 @@ const float SKYV1_CLOUD_HEIGHT = 0.8;
 // Fixed-width replacements for fwidth(): angular sizes assume roughly one
 // pixel at a 60 deg vertical FOV on a ~900 px viewport (0.0012 rad).
 const float SKYV1_PIXEL_ANGLE = 0.0012;
-const float SKYV1_STAR_SPREAD = 0.012; // squared star radius in star-cell units
+const float SKYV1_STAR_ANGLE = 0.0011;  // rad, star radius (about one pixel at 1080p)
 const float SKYV1_SUN_RADIUS = 0.00436;
 // v1 additions.
 const float SKYV1_MOON_RADIUS = 0.009;      // rad, about 2x the real moon (stylized)
@@ -145,6 +146,8 @@ vec3 skyV1_solarDir() {
   return vec3(sin(a)*cos(e), sin(e), cos(a)*cos(e));
 }
 float skyV1_night() { return 1.0-smoothstep(-10.0,-2.0,u_sky_sunElevation); }
+// Night glow of the sky itself (not stars, moon or night effects).
+float skyV1_nightGlow() { return skyV1_night()*u_sky_nightBrightness; }
 float skyV1_daylight() { return exp(min(u_sky_sunElevation,0.0)*0.32); }
 vec3 skyV1_lightTransmittance(float elevation, float multiplier, float ozoneMultiplier) {
   float extinction = exp(-clamp(elevation+0.05,0.0,1.0)*40.0)
@@ -208,8 +211,13 @@ vec3 skyV1_base(vec3 rd) {
   float away = pow(0.5-0.5*facing,2.0);
   color *= 1.0-0.38*blue*away*exp(-up/0.065);
   color += vec3(0.055,0.012,0.055)*belt*blue*away;
-  color += mix(vec3(0.006,0.012,0.028),vec3(0.0025,0.005,0.018),sqrt(up))*night;
-  return color*skyV1_palette(up,facing);
+  // Night: deep overhead, a paler desaturated glow toward the horizon and a
+  // faint green airglow layer low in the sky.
+  vec3 glow = mix(vec3(0.0011,0.0024,0.0085),vec3(0.0070,0.0115,0.0215),exp(-up*3.2));
+  glow += vec3(0.0010,0.0022,0.0012)*exp(-skyV1_sq((up-0.16)/0.13));
+  color += glow*night;
+  // nightBrightness scales the whole night sky, leftover twilight included.
+  return color*skyV1_palette(up,facing)*mix(1.0,u_sky_nightBrightness,night);
 }
 
 // ---- Moon (artist params; moonBrightness = 0 is off) -----------------------
@@ -237,33 +245,19 @@ vec3 skyV1_moonDisk(vec3 rd) {
   return vec3(1.0,1.04,1.10)*1.3*maria*disk*skyV1_moonLight();
 }
 
-// ---- Stars (v0) --------------------------------------------------------------
-vec3 skyV1_stars(vec3 rd) {
-  vec2 p = vec2(atan(rd.x,rd.z),asin(clamp(rd.y,-1.0,1.0)))*150.0;
-  vec2 cell = floor(p);
-  vec2 local = fract(p)-vec2(world_hash12(cell+11.0),world_hash12(cell-19.0));
-  float point = exp(-dot(local,local)/SKYV1_STAR_SPREAD)*0.005/SKYV1_STAR_SPREAD;
-  float selection = step(0.982,world_hash12(cell+63.0));
-  return vec3(0.6,0.75,1.0)*point*selection*12.0*u_sky_stars
-    *skyV1_sq(skyV1_night())*smoothstep(0.0,0.15,rd.y);
-}
-
 // ---- Tint (tintHue, tintStrength) --------------------------------------------
-// One hue scalar along a fixed ramp: 0 cyan, 1/3 gold, 2/3 rose, 1 violet.
-// Neutral is tintStrength = 0 (not a point on the ramp), so hue and strength
-// are not degenerate around neutral; hue is masked when strength < 0.05.
-// Horizon and zenith keys differ (warm horizon, cooler partner overhead), so
-// a tint is spatially structured and not just camera white balance.
-vec3 skyV1_ramp(float h, vec3 a, vec3 b, vec3 c, vec3 d) {
-  h = clamp(h,0.0,1.0)*3.0;
-  vec3 color = mix(a,b,smoothstep(0.0,1.0,h));
-  color = mix(color,c,smoothstep(1.0,2.0,h));
-  return mix(color,d,smoothstep(2.0,3.0,h));
+// tintHue is a position on the full hue wheel (cyclic, 0 = 1): 0 red, 1/6 gold,
+// 1/3 green, 1/2 cyan, 2/3 blue, 5/6 magenta. Neutral is tintStrength = 0 (not a
+// hue), so hue and strength are not degenerate around neutral; hue is masked
+// when strength < 0.05.
+// Horizon and zenith keys differ (the zenith is paler and a step further round
+// the wheel), so a tint is spatially structured and not just white balance.
+vec3 skyV1_hueKey(float h, float depth) {
+  return 1.0+depth*cos(6.2831853*(h-vec3(0.0,0.3333333,0.6666667)));
 }
 vec3 skyV1_tintColor(float up) {
-  float h = u_sky_tintHue;
-  vec3 horizon = skyV1_ramp(h,vec3(0.62,1.02,1.25),vec3(1.38,0.97,0.50),vec3(1.38,0.76,0.86),vec3(1.00,0.76,1.45));
-  vec3 zenith = skyV1_ramp(h,vec3(0.70,0.98,1.25),vec3(1.22,0.90,0.88),vec3(1.06,0.84,1.28),vec3(0.88,0.80,1.40));
+  vec3 horizon = skyV1_hueKey(u_sky_tintHue,0.42);
+  vec3 zenith = skyV1_hueKey(u_sky_tintHue-0.07,0.27);
   vec3 t = mix(horizon,zenith,smoothstep(0.0,0.55,up));
   return t/max(dot(t,SKYV1_LUMA),0.0001);
 }
@@ -290,7 +284,7 @@ vec3 skyV1_hazeColor(vec3 rd, vec3 sun) {
   // Multiple scattering inside the aerosol layer desaturates the reddened light.
   light = mix(light,vec3(dot(light,SKYV1_LUMA)),0.3);
   vec3 lit = light*vec3(1.0,0.95,0.88)*(SKYV1_HAZE_ISO+SKYV1_HAZE_HALO*halo*(0.6+0.4*u_sky_haze));
-  lit += vec3(0.004,0.008,0.016)*skyV1_night();
+  lit += vec3(0.004,0.008,0.016)*skyV1_nightGlow();
   return lit+skyV1_moonSky(rd)*2.0;
 }
 
@@ -305,7 +299,7 @@ vec3 skyV1_stormOpen(vec3 c) {
 // Rain / mist colour for the horizon band below the deck.
 vec3 skyV1_mist() {
   return vec3(0.16,0.185,0.215)*skyV1_cloudLight()*(1.0-0.4*u_sky_storm)
-    +vec3(0.004,0.007,0.014)*skyV1_night()+skyV1_moonSky(vec3(0,0.05,0.9987))*1.5;
+    +vec3(0.004,0.007,0.014)*skyV1_nightGlow()+skyV1_moonSky(vec3(0,0.05,0.9987))*1.5;
 }
 // R8 soft, sky-lit clouds (original code; R7 noise layout, public techniques:
 // iq "directional derivative" article, Schneider 2015, Hillaire 2016).
@@ -483,6 +477,44 @@ vec2 skyV1_face(vec3 rd, out float seed) {
   if (a.y >= a.z) { seed = rd.y > 0.0 ? 47.0 : 61.0; return rd.xz/a.y; }
   seed = rd.z > 0.0 ? 79.0 : 97.0; return rd.xy/a.z;
 }
+// Scintillation: each star flickers at its own pace, more near the horizon
+// where its light crosses more air.
+float skyV1_twinkle(float id, float up) {
+  float depth = mix(0.10,0.55,exp(-max(up,0.0)*3.5));
+  float a = sin(iTime*(2.3+5.1*id)+id*61.0), b = sin(iTime*(6.7+7.9*fract(id*7.3))+id*17.0);
+  return 1.0+depth*(0.6*a+0.4*b);
+}
+// ---- Stars ---------------------------------------------------------------
+// Three fixed layers: many faint stars, fewer bright ones with a soft glow.
+// Star size is a fixed angle (about one pixel at 1080p / 60 deg), no fwidth.
+vec3 skyV1_stars(vec3 rd) {
+  if (rd.y <= 0.0 || u_sky_stars <= 0.0 || skyV1_night() <= 0.0) return vec3(0.0);
+  float seed;
+  vec2 face = skyV1_face(rd,seed);
+  float amount = clamp(u_sky_stars,0.0,2.0);
+  vec3 stars = vec3(0.0);
+  for (int j = 0; j < 3; ++j) {
+    float layer = float(j), scale = 46.0+layer*62.0;
+    vec2 p = (face*0.5+0.5)*scale;
+    vec2 cell = floor(p)+seed*23.0+layer*211.0;
+    float id = world_hash12(cell+5.0);
+    // More of the faint stars come out as the stars value rises.
+    float present = step(world_hash12(cell+63.0),(0.045+0.01*layer)*(0.45+0.55*min(amount,1.5)));
+    vec2 delta = fract(p)-(0.25+0.5*vec2(world_hash12(cell+11.0),world_hash12(cell-19.0)));
+    float r2 = dot(delta,delta)/skyV1_sq(scale*SKYV1_STAR_ANGLE*0.5);
+    float luminosity = pow(world_hash12(cell+89.0),2.5+layer*2.5);
+    float energy = mix(0.06,1.0,luminosity)*(3.0-layer*1.1);
+    // Brighter stars are slightly larger; the halo reaches barely past the core.
+    float bright = smoothstep(0.5,2.0,energy);
+    r2 /= 1.0+0.7*bright;
+    float point = exp(-r2)+0.12*bright*exp(-r2/1.5);
+    float heat = world_hash12(cell+41.0);
+    vec3 tint = mix(mix(vec3(0.62,0.76,1.0),vec3(1.0,0.97,0.92),smoothstep(0.0,0.55,heat)),
+      vec3(1.0,0.76,0.50),smoothstep(0.65,1.0,heat));
+    stars += tint*(point*energy*present*skyV1_twinkle(id,rd.y));
+  }
+  return stars*2.2*u_sky_stars*skyV1_sq(skyV1_night())*smoothstep(0.0,0.15,rd.y);
+}
 // Stars clustered along the galactic band (on top of the base stars).
 // g is the direction in the galactic frame, so they turn with the band.
 vec3 skyV1_galaxyStars(vec3 g, float latitude, float richness) {
@@ -504,7 +536,7 @@ vec3 skyV1_galaxyStars(vec3 g, float latitude, float richness) {
     point *= step(h,0.7*(0.012+0.20*clustering)*(1.0+layer*0.5));
     vec3 tint = mix(vec3(0.56,0.72,1.0),vec3(1.0,0.78,0.53),world_hash12(cell+41.0));
     float luminosity = world_hash12(cell+67.0);
-    stars += tint*point*(0.035+3.5*pow(luminosity,10.0));
+    stars += tint*point*(0.035+3.5*pow(luminosity,10.0))*skyV1_twinkle(h*37.0+luminosity,0.5);
   }
   return stars*1.35;
 }
@@ -668,7 +700,7 @@ vec3 skyV1_radiance(vec3 rd) {
     vec3 ground = mix(horizon*0.34,(upper+horizon)*0.32,u_sky_cloudCover*0.4);
     ground += mix(vec3(0.095,0.035,0.019),vec3(0.095,0.027,0.050),skyV1_pink())
       *skyV1_horizonTint(0.0)*skyV1_warmFill()*(0.4+0.6*u_sky_cloudCover);
-    ground += vec3(0.035,0.055,0.09)*skyV1_night();
+    ground += vec3(0.035,0.055,0.09)*skyV1_nightGlow();
     ground = skyV1_stormOpen(ground+skyV1_moonSky(horizonDir)*0.6);
     color = mix(color,ground,smoothstep(0.0,0.2,-rd.y));
     return max(skyV1_aerial(skyV1_tint(color,0.0),normalize(vec3(rd.x+0.0001,0.0,rd.z)),sun),vec3(0.0));
@@ -680,13 +712,16 @@ vec3 skyV1_radiance(vec3 rd) {
     color += skyV1_lightTransmittance(sun.y,1.0,1.0)*disk*28.0*exp(-2.2*u_sky_haze);
   }
   color = skyV1_tint(color,up);
-  color += skyV1_stars(rd)/(1.0+skyV1_moonLight()*0.9*skyV1_night());
+  vec3 stars = skyV1_stars(rd)/(1.0+skyV1_moonLight()*0.9*skyV1_night());
   color += skyV1_moonDisk(rd);
   color += skyV1_effects(rd);
   if (u_sky_cloudCover > 0.0) {
     vec4 cloud = skyV1_clouds(rd,sun);
     color = mix(color,skyV1_tint(cloud.rgb,up),cloud.a);
+    // Point lights are far brighter than the sky, so even thin cloud must hide them.
+    stars *= skyV1_sq(skyV1_sq(1.0-cloud.a));
   }
+  color += stars;
   return max(skyV1_aerial(color,rd,sun),vec3(0.0));
 }
 
@@ -709,7 +744,7 @@ vec3 sky_sunColor() {
   solar += vec3(0.16,0.045,0.012)*skyV1_warmFill()*smoothstep(-4.0,0.0,u_sky_sunElevation);
   solar *= mix(vec3(1.0),vec3(1.0,0.85,1.6),skyV1_pink()*skyV1_warmFill());
   solar *= exp(-0.7*u_sky_haze)*(1.0-0.75*u_sky_storm);
-  vec3 moon = vec3(0.07,0.11,0.21)*skyV1_night()*(1.0+1.2*skyV1_moonLight())*(1.0-0.6*u_sky_storm);
+  vec3 moon = vec3(0.07,0.11,0.21)*skyV1_night()*(u_sky_nightBrightness+1.2*skyV1_moonLight())*(1.0-0.6*u_sky_storm);
   return skyV1_tint(solar*skyV1_horizonTint(1.0)+moon,0.15);
 }
 vec3 sky_ambient(vec3 n) {
@@ -721,7 +756,7 @@ vec3 sky_ambient(vec3 n) {
   fill = mix(fill,(upper+horizon)*0.32,u_sky_cloudCover*0.4);
   fill += mix(vec3(0.095,0.035,0.019),vec3(0.095,0.027,0.050),skyV1_pink())
     *skyV1_horizonTint(0.0)*skyV1_warmFill()*(0.4+0.6*u_sky_cloudCover);
-  fill += vec3(0.035,0.055,0.09)*skyV1_night();
+  fill += vec3(0.035,0.055,0.09)*skyV1_nightGlow();
   fill = mix(fill,skyV1_hazeColor(horizonDir,sun)*0.45,skyV1_hazeVeil(0.3)*0.6);
   fill += skyV1_moonSky(vec3(0,1,0))*0.8;
   fill = skyV1_stormOpen(fill)*(1.0-0.3*u_sky_storm);
