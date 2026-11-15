@@ -1,4 +1,4 @@
-// Reference sky (skyV1 atmosphere + R8 soft clouds). This file and sky_schema_v1.json are
+// Reference sky (three direct sky colours + R8 soft clouds). This file and sky_schema_v1.json are
 // the single source of the sky: every tool-specific shader is generated from this file.
 // Needs the shared noise texture (textures/noise256.png) bound to skyV1_noiseTexture.
 // Uniform initializers are the schema defaults; the web loader strips them (GLSL ES 3.00).
@@ -97,7 +97,6 @@ float world_fbm3(vec3 p, int octaves) {
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 // ---- Schema v1 "fixed" values -----------------------------------------------
-// v0 fixed values are unchanged (see skyV0.js; folded away as identities).
 const float SKYV1_CLOUD_HEIGHT = 0.8;
 const float SKYV1_TURBIDITY = 1.4;   // fixed: only dims the sun disk and cloud light near the horizon
 const float SKYV1_GLOW_GAIN = 2.0;   // sunGlowColor is a display colour; the glow itself is brighter
@@ -119,7 +118,7 @@ const float SKYV1_GALAXY_STAR_FOOTPRINT = 0.12; // was max(fwidth, 0.12) in milk
 const float SKYV1_AURORA_DENSITY = 1.15;
 const vec3 SKYV1_LUMA = vec3(0.2126,0.7152,0.0722);
 
-// ---- horizonWarmth (schema role: artist since v1; unchanged from v0) -------
+// ---- horizonWarmth (schema role: artist) ------------------------------------
 float skyV1_sq(float x) { return x*x; }
 float skyV1_warmFill() {
   return (1.0-smoothstep(1.0,22.0,u_sky_sunElevation))
@@ -134,8 +133,8 @@ vec3 skyV1_palette(float up, float facing) {
   return mix(skyV1_horizonTint(facing),vec3(1.0),smoothstep(0.0,0.35,up));
 }
 
-// ---- Atmosphere (adapted from lcfSRl Common via twilightSky/skyV0) ---------
-float skyV1_phaseR(float costh) { return (1.0+costh*costh)*0.06; }
+// ---- Scattering terms (adapted from lcfSRl Common, MIT notice above) -------
+// Used for the shape of the sun glow and for the light that reaches the clouds.
 float skyV1_phaseM(float costh, float g) {
   g = min(g, 0.9381);
   float k = 1.55*g-0.55*g*g*g;
@@ -157,11 +156,6 @@ vec3 skyV1_lightTransmittance(float elevation, float multiplier, float ozoneMult
     + exp(-clamp(elevation+0.5,0.0,1.0)*5.0)*0.4
     + skyV1_sq(clamp(1.0-elevation,0.0,1.0))*0.02+0.002;
   return exp(-(skyV1_betaR()+skyV1_betaM()+skyV1_betaO()*ozoneMultiplier)*extinction*multiplier*1e6);
-}
-vec3 skyV1_warmColor() {
-  float sunset = 1.0-smoothstep(-1.0,7.0,u_sky_sunElevation);
-  vec3 warm = mix(vec3(1.0,0.63,0.23),vec3(1.0,0.23,0.065),sunset);
-  return mix(warm,vec3(1.0,0.30,0.43),skyV1_pink());
 }
 void skyV1_rayleighMie(float depth, float densityR, float densityM, out vec3 R, out vec3 M) {
   float molecularColumn = depth/(1.0+depth/180000.0);
@@ -237,15 +231,10 @@ vec3 skyV1_moonDisk(vec3 rd) {
   return vec3(1.0,1.04,1.10)*1.3*maria*disk*skyV1_moonLight();
 }
 
-// Sky colours are set directly, so there is no separate tint any more.
-// (Prototype: the call sites are kept; remove them if this design is adopted.)
-vec3 skyV1_tint(vec3 c, float up) { return c; }
-
 // ---- Haze (aerosol whitening, broad halo, luminous horizon) ------------------
-// turbidity only changes the Mie extinction that reddens sunlight (sunset
-// colour); haze is a grey, optically thick aerosol veil lit by that sunlight,
-// so it whitens the day sky, widens the solar halo and makes the horizon glow
-// (gold at low sun because the light reaching it is already reddened).
+// A grey, optically thick aerosol veil lit by sunlight: it whitens the day sky,
+// widens the solar halo and makes the horizon glow. Its colour follows
+// sunGlowColor (see skyV1_sunTint).
 float skyV1_hazeVeil(float up) {
   return 1.0-exp(-u_sky_haze*(0.24+2.2*exp(-up*4.5)));
 }
@@ -662,20 +651,20 @@ vec3 skyV1_effects(vec3 rd) {
 vec3 skyV1_aerial(vec3 color, vec3 rd, vec3 sun) {
   float up = max(rd.y,0.0);
   if (u_sky_haze > 0.0) {
-    vec3 haze = skyV1_tint(skyV1_hazeColor(rd,sun),up);
+    vec3 haze = skyV1_hazeColor(rd,sun);
     color = mix(color,haze,skyV1_hazeVeil(up));
     color += haze*u_sky_haze*0.4*exp(-up/0.045);
   }
   if (u_sky_storm > 0.0) {
     float rain = u_sky_storm*(1.0-exp(-exp(-up*7.0)*1.8));
-    color = mix(color,skyV1_tint(skyV1_mist(),up),rain*0.85);
+    color = mix(color,skyV1_mist(),rain*0.85);
   }
   return color;
 }
 
 // ---- Portable entry point --------------------------------------------------
 // rd: unit view direction in sky space (Y-up). Returns linear HDR radiance.
-// Order: base (+moon sky, storm grey) + sun disk -> tint -> + stars, moon disk,
+// Order: base (+moon sky, storm grey) + sun disk -> + stars, moon disk,
 // night effect -> clouds over that (so clouds hide effects) -> haze/rain.
 vec3 skyV1_radiance(vec3 rd) {
   vec3 sun = skyV1_solarDir();
@@ -690,21 +679,19 @@ vec3 skyV1_radiance(vec3 rd) {
       *skyV1_horizonTint(0.0)*skyV1_warmFill()*(0.4+0.6*u_sky_cloudCover);
     ground = skyV1_stormOpen(ground+skyV1_moonSky(horizonDir)*0.6);
     color = mix(color,ground,smoothstep(0.0,0.2,-rd.y));
-    return max(skyV1_aerial(skyV1_tint(color,0.0),normalize(vec3(rd.x+0.0001,0.0,rd.z)),sun),vec3(0.0));
+    return max(skyV1_aerial(color,normalize(vec3(rd.x+0.0001,0.0,rd.z)),sun),vec3(0.0));
   }
-  float up = rd.y;
   if (u_sky_sunElevation >= 0.0) {
     float angle = acos(clamp(dot(rd,sun),-1.0,1.0));
     float disk = 1.0-smoothstep(SKYV1_SUN_RADIUS-SKYV1_PIXEL_ANGLE,SKYV1_SUN_RADIUS+SKYV1_PIXEL_ANGLE,angle);
     color += skyV1_lightTransmittance(sun.y,1.0,1.0)*disk*28.0*exp(-2.2*u_sky_haze);
   }
-  color = skyV1_tint(color,up);
   vec3 stars = skyV1_stars(rd)/(1.0+skyV1_moonLight()*0.9*skyV1_night());
   color += skyV1_moonDisk(rd);
   color += skyV1_effects(rd);
   if (u_sky_cloudCover > 0.0) {
     vec4 cloud = skyV1_clouds(rd,sun);
-    color = mix(color,skyV1_tint(cloud.rgb,up),cloud.a);
+    color = mix(color,cloud.rgb,cloud.a);
     // Point lights are far brighter than the sky, so even thin cloud must hide them.
     stars *= skyV1_sq(skyV1_sq(1.0-cloud.a));
   }
@@ -732,7 +719,7 @@ vec3 sky_sunColor() {
   solar *= mix(vec3(1.0),vec3(1.0,0.85,1.6),skyV1_pink()*skyV1_warmFill());
   solar *= exp(-0.7*u_sky_haze)*(1.0-0.75*u_sky_storm);
   vec3 moon = vec3(0.07,0.11,0.21)*skyV1_night()*(u_sky_nightBrightness+1.2*skyV1_moonLight())*(1.0-0.6*u_sky_storm);
-  return skyV1_tint(solar*skyV1_horizonTint(1.0)+moon,0.15);
+  return solar*skyV1_horizonTint(1.0)+moon;
 }
 vec3 sky_ambient(vec3 n) {
   vec3 sun = skyV1_solarDir();
@@ -752,5 +739,5 @@ vec3 sky_ambient(vec3 n) {
     skyV1_auroraColors(lower,upperColor);
     fill += lower*u_sky_auroraIntensity*0.03*skyV1_effectFade();
   }
-  return skyV1_tint(fill,0.3);
+  return fill;
 }

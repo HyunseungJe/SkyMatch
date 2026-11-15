@@ -2,7 +2,7 @@
 import schemaJson from '../../../sky/sky_schema_v1.json';
 import presetsJson from '../../../sky/presets.json';
 
-export type ParamRole = 'regress' | 'classify' | 'artist' | 'nuisance';
+export type ParamRole = 'regress' | 'classify' | 'artist' | 'display';
 
 export interface ParamDef {
   role: ParamRole;

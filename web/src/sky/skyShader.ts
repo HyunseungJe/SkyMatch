@@ -42,7 +42,7 @@ ${sky}
 uniform vec2 u_resolution;   // render target size in pixels
 uniform mat3 u_camera;       // columns: right, up, forward (sky space, Y-up)
 uniform float u_tanHalfFov;  // tan(vertical FOV / 2)
-uniform float u_exposure;    // schema "exposure" (nuisance), applied outside the sky
+uniform float u_exposure;    // schema "exposure" (display), applied outside the sky
 out vec4 outColor;
 
 // AgX base look, the view transform Blender uses, so the web matches Blender.

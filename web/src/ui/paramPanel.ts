@@ -16,10 +16,10 @@ const SLIDER_STEPS = 1000;
 const sections: { title: string; hint: string; roles: ParamRole[] }[] = [
   { title: '분위기', hint: '사진에서 추정하는 값 (회귀·분류)', roles: ['regress', 'classify'] },
   { title: '배치와 움직임', hint: '사용자가 정하는 값', roles: ['artist'] },
-  { title: '표시', hint: '하늘 밖에서 곱하는 값', roles: ['nuisance'] },
+  { title: '표시', hint: '하늘 밖에서 곱하는 값', roles: ['display'] },
 ];
 
-const roleBadge: Record<ParamRole, string> = { regress: '회귀', classify: '분류', artist: '사용자', nuisance: '표시' };
+const roleBadge: Record<ParamRole, string> = { regress: '회귀', classify: '분류', artist: '사용자', display: '표시' };
 
 export interface ParamPanel {
   /** Refreshes every control from θ (after a preset or a JSON load). */
