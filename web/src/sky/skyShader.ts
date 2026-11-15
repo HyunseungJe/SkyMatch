@@ -9,15 +9,15 @@ export interface SkyUniform {
   param: string;
   /** GLSL uniform name, e.g. "u_sky_sunElevation". */
   uniform: string;
-  type: 'float' | 'int';
+  type: 'float' | 'int' | 'vec3';
 }
 
 // GLSL ES 3.00 does not allow uniform initializers; the reference file keeps them
 // as documentation of the schema defaults (and for generators that can use them).
 const sky = skySource.replace(/^(\s*uniform\s+\w+\s+\w+)\s*=[^;]*;/gm, '$1;');
 
-export const skyUniforms: SkyUniform[] = [...sky.matchAll(/^\s*uniform\s+(float|int)\s+u_sky_(\w+)\s*;/gm)].map(
-  (m) => ({ param: m[2], uniform: `u_sky_${m[2]}`, type: m[1] as 'float' | 'int' }),
+export const skyUniforms: SkyUniform[] = [...sky.matchAll(/^\s*uniform\s+(float|int|vec3)\s+u_sky_(\w+)\s*;/gm)].map(
+  (m) => ({ param: m[2], uniform: `u_sky_${m[2]}`, type: m[1] as 'float' | 'int' | 'vec3' }),
 );
 
 for (const u of skyUniforms) {

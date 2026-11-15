@@ -12,7 +12,7 @@ export interface ParamDef {
   max?: number;
   unit?: string;
   scale?: 'log';
-  type?: 'categorical';
+  type?: 'categorical' | 'color';
   values?: Record<string, string>;
   /** Condition under which the param has no visible effect (excluded from loss and evaluation). */
   mask?: string;
@@ -50,14 +50,31 @@ interface EffectDef {
   artistParams: string[];
 }
 
-/** A full sky parameter set θ: every schema param by name. */
+/** A full sky parameter set θ: every schema param by name. Colours are packed 0xRRGGBB (sRGB). */
 export type SkyParams = Record<string, number>;
 
+/** "#rrggbb" in the JSON files <-> packed number in θ. */
+export function parseColor(hex: string): number {
+  if (!/^#[0-9a-fA-F]{6}$/.test(hex)) throw new Error(`Bad colour "${hex}" (expected #rrggbb)`);
+  return parseInt(hex.slice(1), 16);
+}
+export function formatColor(value: number): string {
+  return '#' + Math.round(value).toString(16).padStart(6, '0');
+}
+const fromJson = (value: unknown): number => (typeof value === 'string' ? parseColor(value) : (value as number));
+
 export const schemaVersion: string = schemaJson.version;
-export const paramDefs = schemaJson.params as unknown as Record<string, ParamDef>;
+export const paramDefs = Object.fromEntries(
+  Object.entries(schemaJson.params).map(([name, def]) => [name, { ...def, default: fromJson(def.default) }]),
+) as unknown as Record<string, ParamDef>;
 export const paramNames = Object.keys(paramDefs);
 
-export const presets = presetsJson.presets as Record<string, Partial<SkyParams>>;
+export const presets = Object.fromEntries(
+  Object.entries(presetsJson.presets).map(([name, preset]) => [
+    name,
+    Object.fromEntries(Object.entries(preset).map(([key, value]) => [key, fromJson(value)])),
+  ]),
+) as Record<string, Partial<SkyParams>>;
 export const presetNames = Object.keys(presets);
 
 const activeConditions: Record<string, Condition> = {};

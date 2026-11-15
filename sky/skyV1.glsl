@@ -5,11 +5,11 @@
 uniform float iTime=0.0;
 uniform float u_sky_sunElevation=8.000000000;
 uniform float u_sky_sunAzimuth=20.000000000;
-uniform float u_sky_turbidity=1.400000000;
 uniform float u_sky_haze=0.000000000;
 uniform float u_sky_horizonWarmth=0.000000000;
-uniform float u_sky_tintHue=0.110000000;
-uniform float u_sky_tintStrength=0.000000000;
+uniform vec3 u_sky_zenithColor=vec3(0.078187,0.212231,0.479320);
+uniform vec3 u_sky_horizonColor=vec3(0.871367,0.564712,0.278894);
+uniform vec3 u_sky_sunGlowColor=vec3(1.000000,0.450786,0.063010);
 uniform float u_sky_cloudCover=0.400000000;
 uniform float u_sky_cloudDensity=1.200000000;
 uniform float u_sky_cloudScale=1.000000000;
@@ -99,6 +99,8 @@ float world_fbm3(vec3 p, int octaves) {
 // ---- Schema v1 "fixed" values -----------------------------------------------
 // v0 fixed values are unchanged (see skyV0.js; folded away as identities).
 const float SKYV1_CLOUD_HEIGHT = 0.8;
+const float SKYV1_TURBIDITY = 1.4;   // fixed: only dims the sun disk and cloud light near the horizon
+const float SKYV1_GLOW_GAIN = 2.0;   // sunGlowColor is a display colour; the glow itself is brighter
 const float SKYV1_CLOUD_PLANET = 150.0; // planet radius in cloud units (stylized curvature)
 // Fixed-width replacements for fwidth(): angular sizes assume roughly one
 // pixel at a 60 deg vertical FOV on a ~900 px viewport (0.0012 rad).
@@ -140,7 +142,7 @@ float skyV1_phaseM(float costh, float g) {
   return (1.0-k*k)/(12.57*skyV1_sq(1.0-k*costh));
 }
 vec3 skyV1_betaR() { return vec3(5.802,13.558,33.100)*1e-6; }
-vec3 skyV1_betaM() { return vec3(3.996e-6*u_sky_turbidity); }
+vec3 skyV1_betaM() { return vec3(3.996e-6*SKYV1_TURBIDITY); }
 vec3 skyV1_betaO() { return vec3(0.650,1.881,0.085)*1e-6; }
 vec3 skyV1_solarDir() {
   float e = radians(u_sky_sunElevation), a = radians(u_sky_sunAzimuth);
@@ -170,55 +172,44 @@ void skyV1_rayleighMie(float depth, float densityR, float densityM, out vec3 R, 
 float skyV1_lightElevation(vec3 sun) {
   return sun.y+clamp(-sun.y+0.02,0.0,1.0)*clamp(sun.y+0.7,0.0,1.0);
 }
-vec3 skyV1_atmosphere(vec3 rd, vec3 sun) {
+// How sunlight spreads through the air, as a weight without colour: forward
+// scattering by haze particles (tight round the sun) times how much air the
+// view crosses (most along the horizon). About 1 near a sun on the horizon.
+float skyV1_glowShape(vec3 rd, vec3 sun) {
   float up = max(rd.y,0.0);
   float b = 6371000.0*up;
   float delta = 100000.0*(2.0*6371000.0+100000.0);
   float depth = delta/(sqrt(b*b+delta)+b);
   float hbias = 1.0-1.0/(2.0+depth*depth*1e-12);
-  float densityR = hbias*hbias, densityM = pow(hbias,5.0);
-  vec3 light = skyV1_lightTransmittance(skyV1_lightElevation(sun),hbias,5.0)*28.0*skyV1_daylight();
   vec3 R, M;
-  skyV1_rayleighMie(depth,densityR,densityM,R,M);
-  float mu = dot(rd,sun), phaseR = skyV1_phaseR(mu);
-  vec3 rayleigh = phaseR*1.3*light;
-  vec3 mie = (skyV1_phaseM(mu,0.88)+phaseR*0.3)*light*vec3(0.95,0.85,0.75);
-  return (rayleigh*R+mie*M)*0.23;
+  skyV1_rayleighMie(depth,hbias*hbias,pow(hbias,5.0),R,M);
+  float mu = dot(rd,sun);
+  float phase = skyV1_phaseM(mu,0.76)+0.6*skyV1_phaseM(mu,0.40);
+  return phase*M.x/0.08*skyV1_daylight();
 }
 float skyV1_facing(vec3 rd, vec3 sun) {
   return dot(normalize(vec3(rd.x,0.0001,rd.z)),normalize(vec3(sun.x,0.0001,sun.z)));
 }
-// v0 base sky, unchanged: blue-hour closure, warm band, earth-shadow belt.
+// Colour of the light arriving from the sun's side: the chroma of sunGlowColor
+// (white while the glow is black, as at night).
+vec3 skyV1_sunTint() {
+  float l = dot(u_sky_sunGlowColor,SKYV1_LUMA);
+  vec3 chroma = min(u_sky_sunGlowColor/max(l,1e-4),vec3(3.0));
+  return mix(vec3(1.0),chroma,smoothstep(0.0,0.02,l));
+}
+// Base sky from three colours (linear Rec.709): zenith, horizon and the glow on
+// the sun's side. The colours are set directly; sun elevation only places the
+// glow and shapes it (see skyV1_glowShape).
 vec3 skyV1_base(vec3 rd) {
-  float up = max(rd.y,0.0), e = u_sky_sunElevation;
+  float up = max(rd.y,0.0);
   vec3 sun = skyV1_solarDir();
   float facing = skyV1_facing(rd,sun);
-  float dusk = (1.0-smoothstep(0.0,16.0,e))*exp(-skyV1_sq(min(e,0.0)/4.0));
-  float blue = exp(-skyV1_sq((e+5.0)/4.8));
-  float night = skyV1_night();
-  float warmFill = skyV1_warmFill();
-  vec3 color = skyV1_atmosphere(rd,sun);
-  float toward = pow(max(dot(rd,sun),0.0),2.0);
-  float warmFalloff = exp(-up*1.8);
-  float golden = warmFill*toward*warmFalloff;
-  color *= mix(vec3(1.0),vec3(1.0,0.66,0.32),golden);
-  color += skyV1_warmColor()*golden*0.13;
-  color += vec3(0.018,0.055,0.125)*blue*(0.38+0.62*sqrt(up));
-  float band = exp(-up/(0.028+0.002*max(0.0,6.0+e)));
-  color += mix(vec3(0.35,0.052,0.009),vec3(0.35,0.075,0.070),skyV1_pink())
-    *dusk*band*pow(0.5+0.5*facing,2.0)*(1.0+1.2*u_sky_horizonWarmth);
-  float beltHeight = 0.045+max(-e,0.0)*0.012;
-  float belt = exp(-skyV1_sq((up-beltHeight)/0.075));
-  float away = pow(0.5-0.5*facing,2.0);
-  color *= 1.0-0.38*blue*away*exp(-up/0.065);
-  color += vec3(0.055,0.012,0.055)*belt*blue*away;
-  // Night: deep overhead, a paler desaturated glow toward the horizon and a
-  // faint green airglow layer low in the sky.
-  vec3 glow = mix(vec3(0.0011,0.0024,0.0085),vec3(0.0070,0.0115,0.0215),exp(-up*3.2));
-  glow += vec3(0.0010,0.0022,0.0012)*exp(-skyV1_sq((up-0.16)/0.13));
-  color += glow*night;
-  // nightBrightness scales the whole night sky, leftover twilight included.
-  return color*skyV1_palette(up,facing)*mix(1.0,u_sky_nightBrightness,night);
+  // Most of the change happens close to the horizon, the rest climbs slowly.
+  float low = 0.60*exp(-up*9.0)+0.32*exp(-up*2.4);
+  vec3 color = mix(u_sky_zenithColor,u_sky_horizonColor,low);
+  // The glow's shape comes from the scattering model, its colour from the param.
+  color += u_sky_sunGlowColor*(SKYV1_GLOW_GAIN*skyV1_glowShape(rd,sun));
+  return color*skyV1_palette(up,facing)*mix(1.0,u_sky_nightBrightness,skyV1_night());
 }
 
 // ---- Moon (artist params; moonBrightness = 0 is off) -----------------------
@@ -246,28 +237,9 @@ vec3 skyV1_moonDisk(vec3 rd) {
   return vec3(1.0,1.04,1.10)*1.3*maria*disk*skyV1_moonLight();
 }
 
-// ---- Tint (tintHue, tintStrength) --------------------------------------------
-// tintHue is a position on the full hue wheel (cyclic, 0 = 1): 0 red, 1/6 gold,
-// 1/3 green, 1/2 cyan, 2/3 blue, 5/6 magenta. Neutral is tintStrength = 0 (not a
-// hue), so hue and strength are not degenerate around neutral; hue is masked
-// when strength < 0.05.
-// Horizon and zenith keys differ (the zenith is paler and a step further round
-// the wheel), so a tint is spatially structured and not just white balance.
-vec3 skyV1_hueKey(float h, float depth) {
-  return 1.0+depth*cos(6.2831853*(h-vec3(0.0,0.3333333,0.6666667)));
-}
-vec3 skyV1_tintColor(float up) {
-  vec3 horizon = skyV1_hueKey(u_sky_tintHue,0.42);
-  vec3 zenith = skyV1_hueKey(u_sky_tintHue-0.07,0.27);
-  vec3 t = mix(horizon,zenith,smoothstep(0.0,0.55,up));
-  return t/max(dot(t,SKYV1_LUMA),0.0001);
-}
-// Luminance-keeping recolour: half multiplicative, half chroma replacement.
-vec3 skyV1_tint(vec3 c, float up) {
-  vec3 t = skyV1_tintColor(up);
-  vec3 target = mix(c*t,vec3(dot(c,SKYV1_LUMA))*t,0.55);
-  return mix(c,target,u_sky_tintStrength);
-}
+// Sky colours are set directly, so there is no separate tint any more.
+// (Prototype: the call sites are kept; remove them if this design is adopted.)
+vec3 skyV1_tint(vec3 c, float up) { return c; }
 
 // ---- Haze (aerosol whitening, broad halo, luminous horizon) ------------------
 // turbidity only changes the Mie extinction that reddens sunlight (sunset
@@ -283,7 +255,7 @@ vec3 skyV1_hazeColor(vec3 rd, vec3 sun) {
   float halo = 1.4*exp(-separation/0.10)+0.45*exp(-separation*separation/0.30)+0.50*exp(-separation/0.7);
   vec3 light = skyV1_lightTransmittance(skyV1_lightElevation(sun),1.0,1.0)*skyV1_daylight();
   // Multiple scattering inside the aerosol layer desaturates the reddened light.
-  light = mix(light,vec3(dot(light,SKYV1_LUMA)),0.3);
+  light = mix(vec3(dot(light,SKYV1_LUMA))*skyV1_sunTint(),vec3(dot(light,SKYV1_LUMA)),0.3);
   vec3 lit = light*vec3(1.0,0.95,0.88)*(SKYV1_HAZE_ISO+SKYV1_HAZE_HALO*halo*(0.6+0.4*u_sky_haze));
   lit += vec3(0.004,0.008,0.016)*skyV1_nightGlow();
   return lit+skyV1_moonSky(rd)*2.0;
@@ -388,7 +360,7 @@ vec4 skyV1_clouds(vec3 rd, vec3 sun) {
   lightDir = normalize(lightDir);
   // Direct light reaching the cloud layer, same transmittance as the sky uses.
   vec3 sunLight = skyV1_lightTransmittance(skyV1_lightElevation(sun),1.0,1.0)*skyV1_daylight();
-  sunLight = mix(sunLight,skyV1_warmColor()*dot(sunLight,SKYV1_LUMA)*1.4,skyV1_warmFill()*0.5);
+  sunLight = vec3(dot(sunLight,SKYV1_LUMA))*skyV1_sunTint();
   sunLight *= smoothstep(-6.0,-0.5,u_sky_sunElevation)*1.15;
   vec3 moonLight = vec3(0.020,0.028,0.045)*moon;
   vec3 keyLight = mix(sunLight,moonLight,night)*(1.0-0.6*storm);
@@ -454,7 +426,7 @@ vec4 skyV1_clouds(vec3 rd, vec3 sun) {
       float cellDark = smoothstep(0.30,0.58,cellField);
       S *= 1.0-deck*(0.40+0.40*storm)*cellDark;
       // Aerial perspective: distant clouds melt into the sky behind them.
-      float fog = 1.0-exp(-t*(0.032+0.020*u_sky_haze+0.004*u_sky_turbidity));
+      float fog = 1.0-exp(-t*(0.032+0.020*u_sky_haze+0.004*SKYV1_TURBIDITY));
       S = mix(S,behind,fog);
       // Energy-conserving integration of a slab (albedo 1).
       float ext = sigma*density;
@@ -716,7 +688,6 @@ vec3 skyV1_radiance(vec3 rd) {
     vec3 ground = mix(horizon*0.34,(upper+horizon)*0.32,u_sky_cloudCover*0.4);
     ground += mix(vec3(0.095,0.035,0.019),vec3(0.095,0.027,0.050),skyV1_pink())
       *skyV1_horizonTint(0.0)*skyV1_warmFill()*(0.4+0.6*u_sky_cloudCover);
-    ground += vec3(0.035,0.055,0.09)*skyV1_nightGlow();
     ground = skyV1_stormOpen(ground+skyV1_moonSky(horizonDir)*0.6);
     color = mix(color,ground,smoothstep(0.0,0.2,-rd.y));
     return max(skyV1_aerial(skyV1_tint(color,0.0),normalize(vec3(rd.x+0.0001,0.0,rd.z)),sun),vec3(0.0));

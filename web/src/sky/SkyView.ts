@@ -36,7 +36,7 @@ export class SkyView {
       u_tanHalfFov: { value: Math.tan(THREE.MathUtils.degToRad(VERTICAL_FOV_DEG) / 2) },
       u_exposure: { value: 1 },
     };
-    for (const u of skyUniforms) uniforms[u.uniform] = { value: 0 };
+    for (const u of skyUniforms) uniforms[u.uniform] = { value: u.type === 'vec3' ? new THREE.Color() : 0 };
 
     this.material = new THREE.RawShaderMaterial({
       glslVersion: THREE.GLSL3,
@@ -81,7 +81,9 @@ export class SkyView {
     const uniforms = this.material.uniforms;
     for (const u of skyUniforms) {
       const value = theta[u.param];
-      uniforms[u.uniform].value = u.type === 'int' ? Math.round(value) : value;
+      // Colours are sRGB in θ; setHex converts to the linear values the sky expects.
+      if (u.type === 'vec3') (uniforms[u.uniform].value as THREE.Color).setHex(value, THREE.SRGBColorSpace);
+      else uniforms[u.uniform].value = u.type === 'int' ? Math.round(value) : value;
     }
     uniforms.u_exposure.value = theta.exposure ?? 1;
   }

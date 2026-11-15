@@ -1,6 +1,15 @@
 // Parameter controls generated from the schema: one row per param, grouped by
 // role, dimmed while the schema says the param has no effect at the current θ.
-import { isParamActive, paramDefs, paramNames, type ParamDef, type ParamRole, type SkyParams } from '../sky/schema';
+import {
+  formatColor,
+  isParamActive,
+  paramDefs,
+  paramNames,
+  parseColor,
+  type ParamDef,
+  type ParamRole,
+  type SkyParams,
+} from '../sky/schema';
 
 const SLIDER_STEPS = 1000;
 
@@ -63,8 +72,9 @@ export function createParamPanel(
 
   const buildRow = (name: string, def: ParamDef): Row | null => {
     const categorical = def.type === 'categorical' && def.values;
+    const color = def.type === 'color';
     // Params without a range (time) are driven by the app, not by a slider.
-    if (!categorical && (def.min === undefined || def.max === undefined)) return null;
+    if (!categorical && !color && (def.min === undefined || def.max === undefined)) return null;
 
     const element = document.createElement('div');
     element.className = 'param';
@@ -90,6 +100,25 @@ export function createParamPanel(
       element.append(select);
       readout.hidden = true;
       return { name, element, write: (value) => (select.value = String(Math.round(value))) };
+    }
+
+    if (color) {
+      const picker = document.createElement('input');
+      picker.type = 'color';
+      picker.id = `param-${name}`;
+      picker.addEventListener('input', () => {
+        readout.textContent = picker.value;
+        commit(name, parseColor(picker.value));
+      });
+      element.append(picker);
+      return {
+        name,
+        element,
+        write: (value) => {
+          picker.value = formatColor(value);
+          readout.textContent = picker.value;
+        },
+      };
     }
 
     const slider = document.createElement('input');
