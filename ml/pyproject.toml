@@ -1,0 +1,18 @@
+[project]
+name = "skymatch-ml"
+version = "0.1.0"
+description = "Sky Match: synthetic sky dataset generation and training"
+requires-python = ">=3.12"
+dependencies = [
+    "moderngl>=5.13",
+    "glcontext>=3.1",
+    "numpy>=2.3",
+    "pillow>=11",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["skymatch_ml"]

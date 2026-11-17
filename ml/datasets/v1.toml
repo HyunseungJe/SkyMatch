@@ -1,0 +1,80 @@
+# Synthetic sky dataset v1. This file IS the dataset definition: every distribution used to
+# make the images is here. The generator copies it verbatim into the output manifest.
+# Human-readable explanation: ml/DATASET.md. Distribution forms are defined in skymatch_ml/dist.py:
+#   {const = v} | {uniform = [a, b]} | {log_uniform = [a, b]} | {choice = [...], p = [...]}
+#   {mixture = [{w = .., ...spec}, ...]}   (pick one component by weight w, then sample it)
+
+name = "sky-v1"
+seed = 20261117
+schema = "1.0"
+
+[render]
+width = 256
+height = 192
+shard_size = 4096          # samples per .npy shard
+
+[splits]                   # each split has its own seed stream: SeedSequence([seed, split_id, index])
+train = { id = 0, count = 180000 }
+val   = { id = 1, count = 10000 }
+test  = { id = 2, count = 10000 }
+
+# ---- Camera (photo-like perspective views) ------------------------------------------------
+# Yaw is fixed at 0; the sun's direction relative to the view is set by sunAzimuth below.
+[camera]
+yaw = { const = 0 }
+pitch = { mixture = [ { w = 0.7, uniform = [-5, 20] }, { w = 0.3, uniform = [20, 60] } ] }  # deg above horizon
+fov = { uniform = [35, 75] }                                                                # vertical, deg
+
+# ---- Regressed / classified parameters (schema role regress / classify) -------------------
+[params]
+# Denser near the horizon, where the look changes fastest; the night-only part brings
+# night (< -6 deg, where stars / milky way / aurora show) to about 24 % of samples.
+sunElevation = { mixture = [ { w = 0.45, uniform = [-12, 60] }, { w = 0.45, uniform = [-12, 15] }, { w = 0.10, uniform = [-12, -6] } ] }
+haze = { mixture = [ { w = 0.5, uniform = [0, 0.3] }, { w = 0.5, uniform = [0, 1] } ] }
+cloudCover = { mixture = [ { w = 0.2, const = 0 }, { w = 0.8, uniform = [0, 1] } ] }
+cloudDensity = { log_uniform = [0.2, 5] }
+cloudScale = { log_uniform = [0.25, 1.5] }
+cloudSoftness = { uniform = [0, 1] }
+storm = { mixture = [ { w = 0.6, const = 0 }, { w = 0.4, uniform = [0, 1] } ] }
+stars = { uniform = [0, 2] }
+nightEffect = { choice = [0, 1, 2], p = [0.5, 0.25, 0.25] }
+milkyWayBrightness = { uniform = [0, 2] }
+auroraIntensity = { uniform = [0, 3] }
+auroraHue = { uniform = [0, 1] }
+# zenithColor / horizonColor / sunGlowColor: see [colors].
+
+# ---- Nuisance parameters (schema role artist): vary the image but are not learned ----------
+[nuisance]
+sunAzimuth = { mixture = [ { w = 0.6, uniform = [-60, 60] }, { w = 0.4, uniform = [-180, 180] } ] }  # relative to the view
+time = { uniform = [0, 600] }                 # seconds: different cloud / aurora / twinkle patterns
+milkyWayTilt = { uniform = [0, 90] }
+milkyWayAzimuth = { uniform = [-180, 180] }
+milkyWayWidth = { uniform = [0.5, 2] }
+auroraAzimuth = { uniform = [-180, 180] }
+auroraSpread = { uniform = [60, 360] }
+auroraHeight = { uniform = [0.2, 0.8] }
+# Everything else (moon off, horizonWarmth 0, nightBrightness 1, exposure 1, cloud speed/wind,
+# aurora speed) stays at the schema default, the same as photo fitting.
+
+# ---- Sky colours ---------------------------------------------------------------------------
+# Each sample is either "plausible" (rules below, in OKLCh: L 0..1, C chroma, h hue in degrees)
+# or "random" (each colour uniform over the sRGB cube). Out-of-gamut OKLCh colours keep L and h
+# and have their chroma reduced until they fit sRGB.
+[colors]
+p_plausible = 0.7
+
+[colors.plausible]
+# Zenith lightness by sun elevation phase; horizon lightness = zenith L + offset.
+day      = { min_elevation = 0,   zenith_L = [0.40, 0.85], horizon_offset = [0.00, 0.25] }
+twilight = { min_elevation = -6,  zenith_L = [0.15, 0.60], horizon_offset = [-0.05, 0.30] }
+night    = { min_elevation = -99, zenith_L = [0.00, 0.30], horizon_offset = [-0.03, 0.20] }
+zenith_grey_p = 0.15            # grey zenith: chroma [0, 0.02], any hue
+zenith_hue = [215, 310]         # otherwise sky blue .. blue .. violet (OKLCh 190 is already teal)
+zenith_chroma = [0.02, 0.18]
+horizon_hue_excluded = [100, 170]   # rare yellow-green .. green horizons are left to the random part
+horizon_chroma = [0.0, 0.18]
+glow_none_p = 0.1               # black glow = no sun glow
+glow_L = [0.50, 0.98]
+glow_warm_p = 0.8               # warm hue band, otherwise any hue (pink / violet glows)
+glow_warm_hue = [20, 110]
+glow_chroma = [0.0, 0.20]
