@@ -10,7 +10,7 @@ export class FirstPersonNavigation {
   private enabled = false;
   private yaw = 0;
   private pitch = 0;
-  private speed = 3;
+  private speed = 8; // units (≈ metres) per second; Shift ×3, wheel adjusts
   private readonly keys = new Set<string>();
   private readonly removeEvents: (() => void)[] = [];
 
@@ -32,8 +32,9 @@ export class FirstPersonNavigation {
       if (!this.enabled) return;
       event.stopImmediatePropagation();
       if (pointer !== event.pointerId || editing()) return;
-      this.yaw = THREE.MathUtils.euclideanModulo(this.yaw - (event.clientX - x) * 0.25 + 180, 360) - 180;
-      this.pitch = THREE.MathUtils.clamp(this.pitch + (event.clientY - y) * 0.2, -89, 89);
+      // Mouse-look: dragging right/up turns the head right/up (compass yaw increases toward east).
+      this.yaw = THREE.MathUtils.euclideanModulo(this.yaw + (event.clientX - x) * 0.25 + 180, 360) - 180;
+      this.pitch = THREE.MathUtils.clamp(this.pitch - (event.clientY - y) * 0.2, -89, 89);
       x = event.clientX; y = event.clientY; this.look();
     };
     const up = () => { pointer = null; canvas.classList.remove('dragging'); };
