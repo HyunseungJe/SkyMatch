@@ -6,6 +6,7 @@
 <queue dir>/plan.tsv           name \\t options \\t what changed      (written by the queue script)
 <queue dir>/queue-state.tsv    time \\t name \\t event \\t note        (appended by the queue script)
 <queue dir>/<name>/eval.json   from skymatch_ml.evaluate
+<queue dir>/NOTES.md           optional hand-written notes, copied to the top of both files
 """
 from __future__ import annotations
 
@@ -171,8 +172,10 @@ def main() -> None:
     a = ap.parse_args()
     plan = [r[:3] for r in read_tsv(a.dir / 'plan.tsv')]
     events = read_tsv(a.dir / 'queue-state.tsv')
-    (a.dir / 'STATUS.md').write_text(status_md(a.dir, plan, events), encoding='utf-8')
-    (a.dir / 'SUMMARY.md').write_text(summary_md(a.dir, plan, a.baseline, a.reference, a.seed_pair), encoding='utf-8')
+    notes = a.dir / 'NOTES.md'
+    head = notes.read_text(encoding='utf-8').rstrip() + '\n\n' if notes.exists() else ''
+    (a.dir / 'STATUS.md').write_text(head + status_md(a.dir, plan, events), encoding='utf-8')
+    (a.dir / 'SUMMARY.md').write_text(head + summary_md(a.dir, plan, a.baseline, a.reference, a.seed_pair), encoding='utf-8')
 
 
 if __name__ == '__main__':
