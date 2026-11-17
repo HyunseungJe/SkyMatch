@@ -1,8 +1,11 @@
 import { runBench } from './bench';
+import { createMatchUi } from './match/matchUi';
 import { bakePanorama, PANORAMA_TARGETS, type PanoramaTarget } from './export/panorama';
 import { downloadBlob, thetaFromJson, thetaToJson } from './sky/thetaFile';
 import { defaultParams, presetNames, presetParams, type SkyParams } from './sky/schema';
 import { SkyView } from './sky/SkyView';
+import { ScenePreview } from './scene/ScenePreview';
+import { defaultSceneId, findScene, sceneContents } from './scene/scenes';
 import { createParamPanel, type ParamPanel } from './ui/paramPanel';
 
 // URL options (all optional): ?preset=sunset&yaw=20&pitch=12&time=0&bench=1
@@ -23,6 +26,54 @@ const status = document.querySelector<HTMLDivElement>('#status')!;
 const benchOutput = document.querySelector<HTMLPreElement>('#bench')!;
 
 const view = new SkyView(canvas);
+const sceneToggle = document.querySelector<HTMLButtonElement>('#scene-toggle')!;
+const scenePicker = document.querySelector<HTMLLabelElement>('#scene-picker')!;
+const sceneSelect = document.querySelector<HTMLSelectElement>('#scene-content')!;
+for (const scene of sceneContents) sceneSelect.add(new Option(scene.label, scene.id));
+sceneSelect.value = findScene(query.get('scene') ?? defaultSceneId).id;
+sceneToggle.disabled = true;
+let scenePreview: ScenePreview | null = null;
+let sceneMode = false;
+let sceneLoading: Promise<void> | null = null;
+
+async function setSceneMode(on: boolean): Promise<void> {
+  sceneToggle.disabled = true;
+  sceneSelect.disabled = true;
+  try {
+    if (on && !scenePreview) {
+      status.hidden = false;
+      scenePreview = new ScenePreview(view, canvas);
+      scenePreview.setParams(theta);
+      sceneLoading = scenePreview.init((text) => (status.textContent = text), sceneSelect.value);
+      await sceneLoading;
+    }
+    sceneMode = on;
+    scenePicker.hidden = !on;
+    scenePreview?.setEnabled(on);
+    sceneToggle.textContent = on ? '하늘만' : '장면 미리보기';
+    sceneToggle.setAttribute('aria-pressed', String(on));
+    status.hidden = true;
+  } catch (error) {
+    scenePreview?.dispose(); scenePreview = null;
+    status.classList.add('error');
+    status.textContent = `장면을 준비하지 못했습니다.\n${error instanceof Error ? error.message : String(error)}`;
+  } finally { sceneLoading = null; sceneToggle.disabled = false; sceneSelect.disabled = false; }
+}
+sceneToggle.addEventListener('click', () => void setSceneMode(!sceneMode));
+sceneSelect.addEventListener('change', async () => {
+  if (!scenePreview) return;
+  sceneToggle.disabled = true; sceneSelect.disabled = true; status.hidden = false;
+  status.classList.remove('error');
+  try {
+    sceneLoading = scenePreview.setScene(sceneSelect.value, (text) => (status.textContent = text));
+    await sceneLoading;
+    status.hidden = true;
+  } catch (error) {
+    sceneSelect.value = scenePreview.currentSceneId;
+    status.classList.add('error');
+    status.textContent = `장면을 불러오지 못했습니다.\n${error instanceof Error ? error.message : String(error)}`;
+  } finally { sceneLoading = null; sceneToggle.disabled = false; sceneSelect.disabled = false; }
+});
 
 let theta: SkyParams = defaultParams();
 let yaw = 0;
@@ -38,6 +89,7 @@ function selectPreset(name: string): void {
   basePreset = name;
   theta = presetParams(name);
   view.setParams(theta);
+  scenePreview?.setParams(theta);
   panel?.sync(theta);
   // Until the user looks around, face the sun so the preset's mood is in view.
   if (yawFollowsSun) yaw = theta.sunAzimuth;
@@ -57,6 +109,7 @@ const requestedPreset = query.get('preset');
 selectPreset(requestedPreset && presetNames.includes(requestedPreset) ? requestedPreset : basePreset);
 panel = createParamPanel(paramsElement, theta, () => {
   view.setParams(theta);
+  scenePreview?.setParams(theta);
   presetSelect.value = CUSTOM;
 });
 yaw = queryNumber('yaw') ?? yaw;
@@ -87,6 +140,7 @@ thetaFileInput.addEventListener('change', async () => {
   try {
     theta = thetaFromJson(await file.text());
     view.setParams(theta);
+    scenePreview?.setParams(theta);
     panel?.sync(theta);
     presetSelect.value = CUSTOM;
     showExportStatus(`${file.name}을(를) 불러왔습니다.`);
@@ -109,6 +163,24 @@ exrButton.addEventListener('click', async () => {
   } finally {
     exrButton.disabled = false;
   }
+});
+
+// ---- Sky Match: photo -> matched sky ------------------------------------------
+createMatchUi({
+  renderer: view.renderer,
+  noise: () => view.skyUniforms().skyV1_noiseTexture.value,
+  apply: (matched, camera) => {
+    theta = matched;
+    view.setParams(theta);
+    scenePreview?.setParams(theta);
+    view.setFov(camera.fov);
+    panel?.sync(theta);
+    presetSelect.value = CUSTOM;
+    // Show the sky through the photo's camera (the matched sun azimuth is relative to it).
+    yaw = camera.yaw;
+    pitch = camera.pitch;
+    yawFollowsSun = false;
+  },
 });
 
 // ---- Look around by dragging ------------------------------------------------
@@ -152,11 +224,17 @@ const fixedTime = queryNumber('time');
 const startTime = performance.now();
 let frames = 0;
 let statsSince = startTime;
+let previousFrameTime: number | null = null;
 
 function frame(now: number): void {
+  const dt = previousFrameTime === null ? 0 : (now - previousFrameTime) / 1000;
+  previousFrameTime = now;
   view.setCamera(yaw, pitch);
   view.setTime(theta.time + (fixedTime ?? (now - startTime) / 1000));
-  view.render();
+  if (!sceneLoading) {
+    if (sceneMode) { scenePreview?.update(dt); scenePreview?.render(); }
+    else view.render();
+  }
   frames++;
   if (now - statsSince >= 500) {
     const fps = (frames * 1000) / (now - statsSince);
@@ -176,6 +254,8 @@ async function start(): Promise<void> {
     throw error;
   }
   status.hidden = true;
+  sceneToggle.disabled = false;
+  if (query.get('view') === 'scene') await setSceneMode(true);
 
   if (query.has('bench')) {
     benchOutput.hidden = false;

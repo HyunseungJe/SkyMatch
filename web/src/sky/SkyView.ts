@@ -35,6 +35,7 @@ export class SkyView {
       u_camera: { value: this.cameraMatrix },
       u_tanHalfFov: { value: Math.tan(THREE.MathUtils.degToRad(VERTICAL_FOV_DEG) / 2) },
       u_exposure: { value: 1 },
+      u_dither: { value: 1 },
     };
     for (const u of skyUniforms) uniforms[u.uniform] = { value: u.type === 'vec3' ? new THREE.Color() : 0 };
 
@@ -111,6 +112,11 @@ export class SkyView {
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
     const up = new THREE.Vector3().crossVectors(forward, right);
     this.cameraMatrix.set(right.x, up.x, forward.x, right.y, up.y, forward.y, right.z, up.z, forward.z);
+  }
+
+  /** Vertical field of view in degrees (60 unless a matched photo sets its own). */
+  setFov(verticalDeg: number): void {
+    this.material.uniforms.u_tanHalfFov.value = Math.tan(THREE.MathUtils.degToRad(verticalDeg) / 2);
   }
 
   /** Resizes the drawing buffer to CSS size x devicePixelRatio (render scale is always 1). */

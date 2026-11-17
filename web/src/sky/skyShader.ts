@@ -43,6 +43,7 @@ uniform vec2 u_resolution;   // render target size in pixels
 uniform mat3 u_camera;       // columns: right, up, forward (sky space, Y-up)
 uniform float u_tanHalfFov;  // tan(vertical FOV / 2)
 uniform float u_exposure;    // schema "exposure" (display), applied outside the sky
+uniform float u_dither;      // 1 = 8-bit output dither on screen, 0 for analysis renders
 out vec4 outColor;
 
 // AgX base look, the view transform Blender uses, so the web matches Blender.
@@ -81,7 +82,7 @@ void main() {
   float aspect = u_resolution.x / u_resolution.y;
   vec3 rd = normalize(u_camera * vec3(ndc.x * aspect * u_tanHalfFov, ndc.y * u_tanHalfFov, 1.0));
   vec3 color = display_transform(skyV1_radiance(rd));
-  outColor = vec4(color + display_dither(gl_FragCoord.xy) / 255.0, 1.0);
+  outColor = vec4(color + u_dither * display_dither(gl_FragCoord.xy) / 255.0, 1.0);
 }
 `;
 
