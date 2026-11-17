@@ -1,16 +1,19 @@
 """Train the sky estimator: photo -> θ.
 
     python -m skymatch_ml.train --data <dataset dir> --out <run dir> [--epochs 10] [--limit N]
+        [--arch resnet18|resnet34|resnet50|mobilenet_v3_large] [--no-silhouette] [--aug noise,flip,blur]
 
-Model: torchvision ResNet-18 with ImageNet weights; the classifier is replaced by one linear
-layer giving the regress targets (skymatch_ml/targets.py) and the nightEffect logits.
+Model: a torchvision backbone (default ResNet-18) with ImageNet weights (IMAGENET1K_V1); only its
+last classifier layer is replaced by one linear layer giving the regress targets
+(skymatch_ml/targets.py) and the nightEffect logits.
 Input: sRGB in [0, 1], 4:3, default 128x96; ImageNet normalisation happens inside the model.
 Loss (equal weights, nothing else):
   regress   Smooth L1 (beta 0.05) on normalised targets, masked by the `active` labels;
             every parameter weighs 1 (a colour's 3 channels share that weight)
   classify  cross entropy on nightEffect, only where it is active (night)
   total     regress + classify
-Augmentation: skymatch_ml/augment.py (seeded per sample and epoch).
+Augmentation: skymatch_ml/augment.py (seeded per sample and epoch): silhouette (default on), then
+the optional --aug steps in the fixed order flip, blur, noise.
 Run dir: run.json (args, git, dataset manifest, versions), log.jsonl (per epoch), best.pt,
 model.onnx + model.json (web inference), written at the end.
 """
@@ -29,7 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 
-from .augment import apply_silhouettes, sample_silhouette
+from .augment import apply_extra, apply_silhouettes, parse_extra, sample_extra, sample_silhouette
 from .generate import git_state
 from .targets import Targets
 
@@ -38,12 +41,28 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 SMOOTH_L1_BETA = 0.05
 
 
+ARCHS = {  # name -> (constructor, ImageNet weights used)
+    'resnet18': (torchvision.models.resnet18, torchvision.models.ResNet18_Weights.IMAGENET1K_V1),
+    'resnet34': (torchvision.models.resnet34, torchvision.models.ResNet34_Weights.IMAGENET1K_V1),
+    'resnet50': (torchvision.models.resnet50, torchvision.models.ResNet50_Weights.IMAGENET1K_V1),
+    'mobilenet_v3_large': (torchvision.models.mobilenet_v3_large, torchvision.models.MobileNet_V3_Large_Weights.IMAGENET1K_V1),
+}
+
+
+def model_description(arch: str, pretrained: bool) -> str:
+    return f'torchvision {arch}' + (f' ({ARCHS[arch][1].name})' if pretrained else ' (random init)')
+
+
 class SkyNet(nn.Module):
-    def __init__(self, n_regress: int, n_classes: int, pretrained: bool = True):
+    def __init__(self, n_regress: int, n_classes: int, pretrained: bool = True, arch: str = 'resnet18'):
         super().__init__()
-        weights = torchvision.models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
-        self.backbone = torchvision.models.resnet18(weights=weights)
-        self.backbone.fc = nn.Linear(self.backbone.fc.in_features, n_regress + n_classes)
+        make, weights = ARCHS[arch]
+        self.backbone = make(weights=weights if pretrained else None)
+        if arch.startswith('resnet'):
+            self.backbone.fc = nn.Linear(self.backbone.fc.in_features, n_regress + n_classes)
+        else:  # mobilenet_v3: classifier = Linear, Hardswish, Dropout, Linear(1280, 1000)
+            last = self.backbone.classifier[-1]
+            self.backbone.classifier[-1] = nn.Linear(last.in_features, n_regress + n_classes)
         self.n_regress = n_regress
         self.register_buffer('mean', torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1))
         self.register_buffer('std', torch.tensor(IMAGENET_STD).view(1, 3, 1, 1))
@@ -95,12 +114,16 @@ def to_device(d: dict, dev) -> dict:
             'ca': torch.from_numpy(d['ca']).to(dev), 'cam': d['cam']}
 
 
-def batch_images(d, idx, aug_seed=None, epoch=0):
+def batch_images(d, idx, aug_seed=None, epoch=0, silhouette=True, extra=()):
     x = d['images'][idx].permute(0, 3, 1, 2).float().div_(255)
     if aug_seed is not None:
         w = x.shape[3]
-        sil = [sample_silhouette(aug_seed, epoch, *d['cam'][i], w) for i in idx.tolist()]
-        x = apply_silhouettes(x, sil)
+        rows = idx.tolist()
+        if silhouette:
+            sil = [sample_silhouette(aug_seed, epoch, *d['cam'][i], w) for i in rows]
+            x = apply_silhouettes(x, sil)
+        if extra:
+            x = apply_extra(x, [sample_extra(aug_seed, epoch, d['cam'][i][0], extra, w) for i in rows])
     return x.contiguous(memory_format=torch.channels_last)
 
 
@@ -190,7 +213,11 @@ def main() -> None:
     ap.add_argument('--aug-seed', type=int, default=1)
     ap.add_argument('--no-pretrained', action='store_true')
     ap.add_argument('--limit', type=int, default=None, help='use the first N train images (smoke tests)')
+    ap.add_argument('--arch', choices=sorted(ARCHS), default='resnet18')
+    ap.add_argument('--no-silhouette', action='store_true', help='turn the silhouette augmentation off')
+    ap.add_argument('--aug', default='', help='extra augmentation steps, comma list of flip,blur,noise')
     a = ap.parse_args()
+    extra = parse_extra(a.aug)
 
     size = tuple(int(v) for v in a.size.split('x'))
     a.out.mkdir(parents=True, exist_ok=True)
@@ -203,7 +230,7 @@ def main() -> None:
     val = to_device(load_split(a.data, 'val', size, targets, None), dev)
     print(f'data loaded in {time.time() - t0:.0f} s: train {len(train["t"])}, val {len(val["t"])}', flush=True)
 
-    model = SkyNet(targets.n_regress, targets.n_classes, not a.no_pretrained).to(dev).to(memory_format=torch.channels_last)
+    model = SkyNet(targets.n_regress, targets.n_classes, not a.no_pretrained, a.arch).to(dev).to(memory_format=torch.channels_last)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.weight_decay)
     n = len(train['t'])
     steps_per_epoch = n // a.batch
@@ -214,7 +241,8 @@ def main() -> None:
     dataset_manifest = json.loads((a.data / 'manifest.json').read_text(encoding='utf-8'))
     run = {'args': {k: str(v) if isinstance(v, Path) else v for k, v in vars(a).items()}, 'git': git_state(),
            'dataset': {k: dataset_manifest[k] for k in ('name', 'created', 'config_sha256', 'counts', 'git')},
-           'model': 'torchvision resnet18' + ('' if a.no_pretrained else ' (IMAGENET1K_V1)'),
+           'arch': a.arch, 'model': model_description(a.arch, not a.no_pretrained),
+           'augment': (['silhouette'] if not a.no_silhouette else []) + list(extra),
            'loss': f'smooth_l1(beta={SMOOTH_L1_BETA}) masked, per-parameter weight 1 + masked cross entropy',
            'versions': {'torch': torch.__version__, 'torchvision': torchvision.__version__,
                         'python': platform.python_version()}, 'gpu': torch.cuda.get_device_name(0)}
@@ -229,7 +257,7 @@ def main() -> None:
         rl_sum = cl_sum = 0.0
         for s in range(steps_per_epoch):
             idx = order[s * a.batch:(s + 1) * a.batch]
-            x = batch_images(train, idx, a.aug_seed, epoch)
+            x = batch_images(train, idx, a.aug_seed, epoch, not a.no_silhouette, extra)
             with torch.autocast('cuda', dtype=torch.bfloat16):
                 reg, logits = model(x)
             rl, cl = losses(reg, logits, train['t'][idx], train['m'][idx], train['c'][idx], train['ca'][idx], pw)
@@ -251,10 +279,11 @@ def main() -> None:
         val_total = ev['loss_regress'] + ev['loss_classify']
         if val_total < best:
             best = val_total
-            torch.save({'model': model.state_dict(), 'epoch': epoch, 'val': ev, 'size': size}, a.out / 'best.pt')
+            torch.save({'model': model.state_dict(), 'epoch': epoch, 'val': ev, 'size': size, 'arch': a.arch},
+                       a.out / 'best.pt')
     ckpt = torch.load(a.out / 'best.pt', map_location='cpu')
     model.load_state_dict(ckpt['model'])
-    export_onnx(model, targets, size, a.out, {'trained': {'run': a.out.name, 'epoch': ckpt['epoch'],
+    export_onnx(model, targets, size, a.out, {'arch': a.arch, 'trained': {'run': a.out.name, 'epoch': ckpt['epoch'],
                 'git': run['git'], 'dataset': run['dataset']['name'], 'val_mae': ckpt['val']['mae']}})
     print(f'done -> {a.out}', flush=True)
 
