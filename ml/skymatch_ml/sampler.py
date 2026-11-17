@@ -95,5 +95,11 @@ def sample_item(config: dict, schema: Schema, split_id: int, index: int) -> dict
     for name, d in schema.params.items():  # stay inside the frozen schema ranges
         if 'min' in d and d.get('type') != 'color':
             params[name] = min(max(params[name], d['min']), d['max'])
+    # Round to 6 decimals before rendering: the label is exactly what was rendered, and last-bit
+    # libm differences between platforms (seen in math.exp on Windows vs Linux) disappear.
+    for name, v in params.items():
+        if isinstance(v, float):
+            params[name] = round(v, 6)
+    camera = {k: round(v, 6) for k, v in camera.items()}
     return {'split_id': split_id, 'index': index, 'params': params, 'camera': camera,
             'active': schema.active(params), 'color_mode': mode}

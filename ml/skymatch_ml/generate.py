@@ -62,7 +62,7 @@ def write_shard(renderer, config, schema, split, split_id, start, count, out_dir
     del images
     os.replace(tmp_images, images_path)
     tmp_labels = out_dir / f'labels-{stem}.tmp.jsonl'
-    tmp_labels.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    tmp_labels.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')  # same bytes on every OS
     os.replace(tmp_labels, labels_path)  # labels last: a shard counts as done only when both exist
 
 
