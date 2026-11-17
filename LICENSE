@@ -20,6 +20,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Portions of reference/skyV1.glsl are adapted from "Fast semi-physical
-atmosphere" by Felix Westin (Shadertoy lcfSRl), MIT licensed; its notice is
-kept in that file.
+Portions of sky/skyV1.glsl and of the engine ports generated from it
+(ports/blender/skyV1.osl, ports/godot/sky_match_v1.gdshader,
+ports/unity/SkyMatchV1/SkyMatchV1.shader) are adapted from "Fast
+semi-physical atmosphere" by Felix Westin (Shadertoy lcfSRl), MIT licensed;
+its notice is kept in each of those files.
