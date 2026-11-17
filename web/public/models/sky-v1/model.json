@@ -1,0 +1,154 @@
+{
+  "format": "skymatch-model",
+  "version": 1,
+  "input": {
+    "name": "image",
+    "width": 128,
+    "height": 96,
+    "layout": "NCHW",
+    "encoding": "sRGB float in [0, 1]; center-crop the photo to 4:3, box-filter resize"
+  },
+  "outputs": {
+    "regress": "normalised targets (see regress[]): clamp to [0, 1] then decode",
+    "logits": "softmax over classify values"
+  },
+  "regress": [
+    {
+      "name": "sunElevation",
+      "kind": "linear",
+      "column": 0,
+      "width": 1,
+      "min": -12,
+      "max": 60
+    },
+    {
+      "name": "zenithColor",
+      "kind": "color",
+      "column": 1,
+      "width": 3
+    },
+    {
+      "name": "horizonColor",
+      "kind": "color",
+      "column": 4,
+      "width": 3
+    },
+    {
+      "name": "sunGlowColor",
+      "kind": "color",
+      "column": 7,
+      "width": 3
+    },
+    {
+      "name": "haze",
+      "kind": "linear",
+      "column": 10,
+      "width": 1,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "name": "cloudCover",
+      "kind": "linear",
+      "column": 11,
+      "width": 1,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "name": "cloudDensity",
+      "kind": "log",
+      "column": 12,
+      "width": 1,
+      "min": 0.2,
+      "max": 5
+    },
+    {
+      "name": "cloudScale",
+      "kind": "log",
+      "column": 13,
+      "width": 1,
+      "min": 0.25,
+      "max": 1.5
+    },
+    {
+      "name": "cloudSoftness",
+      "kind": "linear",
+      "column": 14,
+      "width": 1,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "name": "storm",
+      "kind": "linear",
+      "column": 15,
+      "width": 1,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "name": "stars",
+      "kind": "linear",
+      "column": 16,
+      "width": 1,
+      "min": 0,
+      "max": 2
+    },
+    {
+      "name": "milkyWayBrightness",
+      "kind": "linear",
+      "column": 17,
+      "width": 1,
+      "min": 0,
+      "max": 2
+    },
+    {
+      "name": "auroraIntensity",
+      "kind": "linear",
+      "column": 18,
+      "width": 1,
+      "min": 0,
+      "max": 3
+    },
+    {
+      "name": "auroraHue",
+      "kind": "linear",
+      "column": 19,
+      "width": 1,
+      "min": 0,
+      "max": 1
+    }
+  ],
+  "n_regress": 20,
+  "classify": {
+    "name": "nightEffect",
+    "n": 3
+  },
+  "trained": {
+    "run": "demo-r18-128",
+    "epoch": 6,
+    "git": {
+      "commit": "9dddc82b8364af536fffbe4d283d303f54ecd73f",
+      "dirty": true
+    },
+    "dataset": "sky-v1",
+    "val_mae": {
+      "sunElevation": 6.0381,
+      "zenithColor": 17.74,
+      "horizonColor": 35.85,
+      "sunGlowColor": 49.61,
+      "haze": 0.1376,
+      "cloudCover": 0.0855,
+      "cloudDensity": 0.3821,
+      "cloudScale": 0.193,
+      "cloudSoftness": 0.2007,
+      "storm": 0.1336,
+      "stars": 0.3363,
+      "milkyWayBrightness": 0.4123,
+      "auroraIntensity": 0.7361,
+      "auroraHue": 0.1831,
+      "nightEffect_acc": 0.8504
+    }
+  }
+}

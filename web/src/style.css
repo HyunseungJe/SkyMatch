@@ -346,11 +346,23 @@ body.no-ui #export {
   font-size: 12px;
 }
 
+#match .match-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+#match .match-method select {
+  margin-left: 4px;
+  font: inherit;
+}
+
 #match .match-mask-toggle {
   display: inline-flex;
   gap: 5px;
   align-items: center;
-  margin-top: 8px;
   cursor: pointer;
 }
 

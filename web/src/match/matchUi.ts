@@ -5,6 +5,7 @@ import type { SkyParams } from '../sky/schema';
 import { FIT_TIME, matchPhoto, scoreTheta, type MatchResult } from './fit';
 import { FitRenderer, type FitCamera } from './fitRenderer';
 import { fitSize, loadPhoto, resizeImage, type RgbaImage } from './image';
+import { estimatePhoto, loadModel } from './mlEstimate';
 
 export interface MatchUiHooks {
   renderer: THREE.WebGLRenderer;
@@ -47,7 +48,13 @@ export function createMatchUi(hooks: MatchUiHooks): { open: (file: Blob, name?: 
       <figure><canvas class="match-photo"></canvas><figcaption>사진</figcaption></figure>
       <figure><canvas class="match-sky"></canvas><figcaption>맞춘 하늘</figcaption></figure>
     </div>
-    <label class="match-mask-toggle"><input type="checkbox" /> 하늘 영역 보기</label>
+    <div class="match-options">
+      <label class="match-method">방식 <select>
+        <option value="ml">ML 모델</option>
+        <option value="fit">최적화 (CMA-ES)</option>
+      </select></label>
+      <label class="match-mask-toggle"><input type="checkbox" /> 하늘 영역 보기</label>
+    </div>
     <div class="match-status"></div>`;
   document.body.append(panel);
   const photoCanvas = panel.querySelector<HTMLCanvasElement>('.match-photo')!;
@@ -55,15 +62,20 @@ export function createMatchUi(hooks: MatchUiHooks): { open: (file: Blob, name?: 
   const status = panel.querySelector<HTMLDivElement>('.match-status')!;
   const maskToggle = panel.querySelector<HTMLInputElement>('.match-mask-toggle input')!;
   const nameLabel = panel.querySelector<HTMLSpanElement>('.match-name')!;
+  const methodSelect = panel.querySelector<HTMLSelectElement>('.match-method select')!;
+  let lastFile: { file: Blob; name: string } | null = null;
+  methodSelect.addEventListener('change', () => {
+    if (lastFile) void open(lastFile.file, lastFile.name);
+  });
 
   let thumb: RgbaImage | null = null;
-  let last: MatchResult | null = null;
+  let last: Pick<MatchResult, 'detection'> | null = null;
   let running: AbortController | null = null;
 
   const drawPhoto = () => {
     if (!thumb) return;
     drawImage(photoCanvas, thumb);
-    if (maskToggle.checked && last) {
+    if (maskToggle.checked && last?.detection) {
       const { mask, width, height } = last.detection;
       const ctx = photoCanvas.getContext('2d')!;
       const overlay = ctx.getImageData(0, 0, thumb.width, thumb.height);
@@ -97,6 +109,7 @@ export function createMatchUi(hooks: MatchUiHooks): { open: (file: Blob, name?: 
   async function open(file: Blob, name = ''): Promise<void> {
     running?.abort();
     const controller = (running = new AbortController());
+    lastFile = { file, name };
     panel.hidden = false;
     nameLabel.textContent = name;
     last = null;
@@ -108,6 +121,22 @@ export function createMatchUi(hooks: MatchUiHooks): { open: (file: Blob, name?: 
       const [tw, th] = fitSize(photo.width, photo.height, PREVIEW * Math.min(2, window.devicePixelRatio));
       thumb = resizeImage(photo, tw, th);
       drawPhoto();
+      if (methodSelect.value === 'ml') {
+        status.textContent = '모델을 불러오는 중입니다… (처음 한 번, 약 45MB)';
+        await loadModel();
+        if (controller !== running) return;
+        status.textContent = '추정하는 중입니다…';
+        const r = await estimatePhoto(photo);
+        if (controller !== running) return;
+        const sky = renderer().render(r.theta, r.camera, FIT_TIME, tw, th);
+        drawImage(skyCanvas, { width: tw, height: th, data: sky });
+        hooks.apply(r.theta, r.camera);
+        const night = r.theta.sunElevation < -6
+          ? ` · 밤 효과 ${NIGHT_LABELS[r.theta.nightEffect]} (${r.classProb.map((p, c) => `${NIGHT_LABELS[c]} ${(p * 100).toFixed(0)}%`).join(', ')})`
+          : '';
+        status.textContent = `ML 모델 (${r.model.trained?.run ?? '?'}) · ${r.ms.toFixed(0)} ms · 해 고도 ${r.theta.sunElevation.toFixed(1)}°${night}`;
+        return;
+      }
       const result = await matchPhoto(photo, renderer(), {
         signal: controller.signal,
         onProgress: (f, stage) => {
