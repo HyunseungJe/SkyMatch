@@ -84,3 +84,29 @@ void main() {
   outColor = vec4(color + display_dither(gl_FragCoord.xy) / 255.0, 1.0);
 }
 `;
+
+/**
+ * Equirect panorama of the sky, linear HDR (no exposure, no tone mapping), drawn one tile at a time.
+ * Column u = (x + 0.5) / width shows compass azimuth (u + u_uShift - 0.5) * 360 deg (0 = north = +Z,
+ * 90 = east = +X); u_uShift picks the tool's convention. Row 0 of the render target is the bottom.
+ */
+export const panoramaFragmentShader = /* glsl */ `
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+
+${sky}
+
+uniform vec2 u_panoSize;    // full panorama size in pixels
+uniform vec2 u_tileOffset;  // tile origin in the panorama (pixels from the bottom-left)
+uniform float u_uShift;
+out vec4 outColor;
+
+void main() {
+  vec2 uv = (u_tileOffset + gl_FragCoord.xy) / u_panoSize;
+  float lon = (uv.x + u_uShift - 0.5) * 2.0 * PI;
+  float lat = (uv.y - 0.5) * PI;
+  vec3 rd = vec3(sin(lon) * cos(lat), sin(lat), cos(lon) * cos(lat));
+  outColor = vec4(skyV1_radiance(rd), 1.0);
+}
+`;

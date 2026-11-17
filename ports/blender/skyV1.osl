@@ -1,0 +1,831 @@
+// Hand port of frozen sky/skyV1.glsl (schema 1.0), linear Rec.709 HDR.
+// Same function names, constants, expression order and 96-step cloud march.
+// OSL adaptation: vec2 uses vector.xy; the cloud vec4 uses CloudResult.
+// No external shader code, built-in noise, derivatives or 3D textures.
+#define PI 3.14159265359
+// Round before fract: LLVM otherwise contracts the preceding multiplication
+// with subtraction, changing the float32 hash (and thus the star catalogue).
+float fp32(float x) {
+  return floor(x*79228162514264337593543950336.0)*1.262177448353619e-29;
+}
+// Match GLSL/NVIDIA's nested fused dot while retaining float32 intermediate
+// rounding under OSL/LLVM. Dekker products recover the residual before one
+// final rounding; hash arguments are bounded and positive after fract.
+float reference_fma(float a,float b,float c) {
+  float p=fp32(a*b);
+  float ca=fp32(4097.0*a), ah=fp32(ca-fp32(ca-a)), al=fp32(a-ah);
+  float cb=fp32(4097.0*b), bh=fp32(cb-fp32(cb-b)), bl=fp32(b-bh);
+  float error=fp32(fp32(fp32(fp32(ah*bh)-p)+fp32(ah*bl))+fp32(al*bh));
+  error=fp32(error+fp32(al*bl));
+  float total=fp32(p+c);
+  float residual=p>=c ? fp32(fp32(p-total)+c) : fp32(fp32(c-total)+p);
+  return fp32(total+fp32(error+residual));
+}
+float reference_dot(vector a,vector b) {
+  return reference_fma(a[2],b[2],reference_fma(a[1],b[1],fp32(a[0]*b[0])));
+}
+float fract(float x) { float f=fp32(x); return fp32(f-floor(f)); }
+vector fract(vector x) { return vector(fract(x[0]),fract(x[1]),fract(x[2])); }
+vector v2(float x,float y) { return vector(x,y,0); }
+vector v2(float x) { return vector(x,x,0); }
+vector pack(vector xy,float z) { return vector(xy[0],xy[1],z); }
+float dot2(vector a,vector b) { return a[0]*b[0]+a[1]*b[1]; }
+float length2(vector a) { return sqrt(dot2(a,a)); }
+struct CloudResult { vector rgb; float a; };
+CloudResult cloudResult(vector rgb,float a) { CloudResult c; c.rgb=rgb; c.a=a; return c; }
+struct SkyState {
+  float sunElevation;
+  float sunAzimuth;
+  float haze;
+  float horizonWarmth;
+  vector zenithColor;
+  vector horizonColor;
+  vector sunGlowColor;
+  float cloudCover;
+  float cloudDensity;
+  float cloudScale;
+  float cloudSoftness;
+  float storm;
+  float stars;
+  float moonElevation;
+  float moonAzimuth;
+  float moonBrightness;
+  float nightBrightness;
+  int nightEffect;
+  float milkyWayBrightness;
+  float auroraIntensity;
+  float auroraHue;
+  float milkyWayTilt;
+  float milkyWayAzimuth;
+  float milkyWayWidth;
+  float auroraAzimuth;
+  float auroraSpread;
+  float auroraHeight;
+  float auroraSpeed;
+  float cloudSpeed;
+  float cloudWindDirection;
+  float time;
+  string noiseTexture;
+};
+
+// Filename textures are raw data, bilinear, LOD 0 (explicit zero derivatives).
+// Cycles ignores periodic wrapping: wrap manually and add clipped edge lobes.
+// GL PNG row zero is the first row; Blender texture V starts at the bottom.
+color skyV1_fetch(SkyState s,float u_in,float v_in) {
+  float u=fract(u_in), v=fract(v_in);
+  float du=u<0.5?1.0:-1.0, dv=v<0.5?1.0:-1.0;
+  int seam_u=u<0.001953125 || u>0.998046875;
+  int seam_v=v<0.001953125 || v>0.998046875;
+  color c=texture(s.noiseTexture,u,1.0-v,0.0,0.0,0.0,0.0,"interp","bilinear");
+  if(seam_u)c+=texture(s.noiseTexture,u+du,1.0-v,0.0,0.0,0.0,0.0,"interp","bilinear");
+  if(seam_v)c+=texture(s.noiseTexture,u,1.0-v-dv,0.0,0.0,0.0,0.0,"interp","bilinear");
+  if(seam_u && seam_v)c+=texture(s.noiseTexture,u+du,1.0-v-dv,0.0,0.0,0.0,0.0,"interp","bilinear");
+  return c;
+}
+float world_hash12(vector p) {
+  vector q = fract(vector(p[0],p[1],p[0]) * 0.1031);
+  q += reference_dot(q, vector(fp32(q[1]+33.33),fp32(q[2]+33.33),fp32(q[0]+33.33)));
+  return fract((q[0] + q[1]) * q[2]);
+}
+float world_hash13(vector p_in) {
+  vector p = p_in;
+  p = fract(p * 0.1031);
+  p += reference_dot(p, vector(fp32(p[2]+31.32),fp32(p[1]+31.32),fp32(p[0]+31.32)));
+  return fract((p[0] + p[1]) * p[2]);
+}
+float world_noise2(vector p) {
+  vector i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(world_hash12(i), world_hash12(i + v2(1,0)), f[0]),
+    mix(world_hash12(i + v2(0,1)), world_hash12(i + v2(1,1)), f[0]), f[1]);
+}
+float world_noise3(vector p) {
+  vector i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(world_hash13(i), world_hash13(i + vector(1,0,0)), f[0]),
+                 mix(world_hash13(i + vector(0,1,0)), world_hash13(i + vector(1,1,0)), f[0]), f[1]),
+             mix(mix(world_hash13(i + vector(0,0,1)), world_hash13(i + vector(1,0,1)), f[0]),
+                 mix(world_hash13(i + vector(0,1,1)), world_hash13(i + vector(1,1,1)), f[0]), f[1]), f[2]);
+}
+float world_fbm2(vector p_in, int octaves) {
+  vector p = p_in;
+  float value = 0.0, weight = 0.5, total = 0.0;
+  for (int i = 0; i < 8; ++i) { if (i >= octaves) break;
+    value += weight * world_noise2(p); total += weight; p = p * 2.03 + 17.1; weight *= 0.5;
+  }
+  return value / max(total, 0.0001);
+}
+float world_fbm3(vector p_in, int octaves) {
+  vector p = p_in;
+  float value = 0.0, weight = 0.5, total = 0.0;
+  for (int i = 0; i < 8; ++i) { if (i >= octaves) break;
+    value += weight * world_noise3(p); total += weight; p = p * 2.03 + 17.1; weight *= 0.5;
+  }
+  return value / max(total, 0.0001);
+}
+
+
+// Copyright (c) 2024 Felix Westin
+//
+// Permission is hereby granted, free of charge, to any person obtaining
+// a copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to
+// permit persons to whom the Software is furnished to do so, subject to
+// the following conditions:
+//
+// The above copyright notice and this permission notice shall be
+// included in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+// WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+// ---- Schema v1 "fixed" values -----------------------------------------------
+#define SKYV1_CLOUD_HEIGHT (0.8)
+#define SKYV1_TURBIDITY (1.4)   // fixed: only dims the sun disk and cloud light near the horizon
+#define SKYV1_GLOW_GAIN (2.0)   // sunGlowColor is a display colour; the glow itself is brighter
+#define SKYV1_CLOUD_PLANET (150.0) // planet radius in cloud units (stylized curvature)
+// Fixed-width replacements for fwidth(): angular sizes assume roughly one
+// pixel at a 60 deg vertical FOV on a ~900 px viewport (0.0012 rad).
+#define SKYV1_PIXEL_ANGLE (0.0012)
+#define SKYV1_STAR_ANGLE (0.0011)  // rad, star radius (about one pixel at 1080p)
+#define SKYV1_SUN_RADIUS (0.00436)
+// v1 additions.
+#define SKYV1_MOON_RADIUS (0.009)      // rad, about 2x the real moon (stylized)
+#define SKYV1_HAZE_ISO (0.55)          // isotropic aerosol radiance per unit sunlight
+#define SKYV1_HAZE_HALO (0.55)         // broad forward-scattering halo gain
+#define SKYV1_EFFECT_FADE_LO (-8.0)    // night effects fully on below (deg)
+#define SKYV1_EFFECT_FADE_HI (-3.0)    // night effects off above (deg)
+// Milky Way tilt/azimuth/width and aurora azimuth/spread/height/speed are
+// artist uniforms (s.*), not constants.
+#define SKYV1_GALAXY_STAR_FOOTPRINT (0.12) // was max(fwidth, 0.12) in milkyWay
+#define SKYV1_AURORA_DENSITY (1.15)
+#define SKYV1_LUMA (vector(0.2126,0.7152,0.0722))
+
+// ---- horizonWarmth (schema role: artist) ------------------------------------
+float skyV1_sq(SkyState s,float x) { return x*x; }
+float skyV1_warmFill(SkyState s) {
+  return (1.0-smoothstep(1.0,22.0,s.sunElevation))
+    *smoothstep(-9.0,-1.0,s.sunElevation);
+}
+float skyV1_pink(SkyState s) { return 0.35*s.horizonWarmth; }
+vector skyV1_horizonTint(SkyState s,float facing) {
+  float k = s.horizonWarmth*skyV1_warmFill(s)*(0.35+0.65*skyV1_sq(s,0.5+0.5*facing));
+  return mix(vector(1.0),vector(1.0,0.80,0.58),k);
+}
+vector skyV1_palette(SkyState s,float up, float facing) {
+  return mix(skyV1_horizonTint(s,facing),vector(1.0),smoothstep(0.0,0.35,up));
+}
+
+// ---- Scattering terms (adapted from lcfSRl Common, MIT notice above) -------
+// Used for the shape of the sun glow and for the light that reaches the clouds.
+float skyV1_phaseM(SkyState s,float costh, float g_in) {
+  float g = g_in;
+  g = min(g, 0.9381);
+  float k = 1.55*g-0.55*g*g*g;
+  return (1.0-k*k)/(12.57*skyV1_sq(s,1.0-k*costh));
+}
+vector skyV1_betaR(SkyState s) { return vector(5.802,13.558,33.100)*1e-6; }
+vector skyV1_betaM(SkyState s) { return vector(3.996e-6*SKYV1_TURBIDITY); }
+vector skyV1_betaO(SkyState s) { return vector(0.650,1.881,0.085)*1e-6; }
+vector skyV1_solarDir(SkyState s) {
+  float e = radians(s.sunElevation), a = radians(s.sunAzimuth);
+  return vector(sin(a)*cos(e), sin(e), cos(a)*cos(e));
+}
+float skyV1_night(SkyState s) { return 1.0-smoothstep(-10.0,-2.0,s.sunElevation); }
+// Night glow of the sky itself (not stars, moon or night effects).
+float skyV1_nightGlow(SkyState s) { return skyV1_night(s)*s.nightBrightness; }
+float skyV1_daylight(SkyState s) { return exp(min(s.sunElevation,0.0)*0.32); }
+vector skyV1_lightTransmittance(SkyState s,float elevation, float multiplier, float ozoneMultiplier) {
+  float extinction = exp(-clamp(elevation+0.05,0.0,1.0)*40.0)
+    + exp(-clamp(elevation+0.5,0.0,1.0)*5.0)*0.4
+    + skyV1_sq(s,clamp(1.0-elevation,0.0,1.0))*0.02+0.002;
+  return exp(-(skyV1_betaR(s)+skyV1_betaM(s)+skyV1_betaO(s)*ozoneMultiplier)*extinction*multiplier*1e6);
+}
+void skyV1_rayleighMie(SkyState s,float depth, float densityR, float densityM, output vector R, output vector M) {
+  float molecularColumn = depth/(1.0+depth/180000.0);
+  float aerosolColumn = depth/(1.0+depth/110000.0);
+  R = (1.0-exp(-molecularColumn*densityR*skyV1_betaR(s)/2.5))*2.5;
+  M = (1.0-exp(-aerosolColumn*densityM*skyV1_betaM(s)/0.5))*0.5;
+}
+float skyV1_lightElevation(SkyState s,vector sun) {
+  return sun[1]+clamp(-sun[1]+0.02,0.0,1.0)*clamp(sun[1]+0.7,0.0,1.0);
+}
+// How sunlight spreads through the air, as a weight without colour: forward
+// scattering by haze particles (tight round the sun) times how much air the
+// view crosses (most along the horizon). About 1 near a sun on the horizon.
+float skyV1_glowShape(SkyState s,vector rd, vector sun) {
+  float up = max(rd[1],0.0);
+  float b = 6371000.0*up;
+  float delta = 100000.0*(2.0*6371000.0+100000.0);
+  float depth = delta/(sqrt(b*b+delta)+b);
+  float hbias = 1.0-1.0/(2.0+depth*depth*1e-12);
+  vector R, M;
+  skyV1_rayleighMie(s,depth,hbias*hbias,pow(hbias,5.0),R,M);
+  float mu = dot(rd,sun);
+  float phase = skyV1_phaseM(s,mu,0.76)+0.6*skyV1_phaseM(s,mu,0.40);
+  return phase*M[0]/0.08*skyV1_daylight(s);
+}
+float skyV1_facing(SkyState s,vector rd, vector sun) {
+  return dot(normalize(vector(rd[0],0.0001,rd[2])),normalize(vector(sun[0],0.0001,sun[2])));
+}
+// Colour of the light arriving from the sun's side: the chroma of sunGlowColor
+// (white while the glow is black, as at night).
+vector skyV1_sunTint(SkyState s) {
+  float l = dot(s.sunGlowColor,SKYV1_LUMA);
+  vector chroma = min(s.sunGlowColor/max(l,1e-4),vector(3.0));
+  return mix(vector(1.0),chroma,smoothstep(0.0,0.02,l));
+}
+// Base sky from three colours (linear Rec.709): zenith, horizon and the glow on
+// the sun's side. The colours are set directly; sun elevation only places the
+// glow and shapes it (see skyV1_glowShape).
+vector skyV1_base(SkyState s,vector rd) {
+  float up = max(rd[1],0.0);
+  vector sun = skyV1_solarDir(s);
+  float facing = skyV1_facing(s,rd,sun);
+  // Most of the change happens close to the horizon, the rest climbs slowly.
+  float low = 0.60*exp(-up*9.0)+0.32*exp(-up*2.4);
+  vector result = mix(s.zenithColor,s.horizonColor,low);
+  // The glow's shape comes from the scattering model, its colour from the param.
+  result += s.sunGlowColor*(SKYV1_GLOW_GAIN*skyV1_glowShape(s,rd,sun));
+  return result*skyV1_palette(s,up,facing)*mix(1.0,s.nightBrightness,skyV1_night(s));
+}
+
+// ---- Moon (artist params; moonBrightness = 0 is off) -----------------------
+vector skyV1_moonDir(SkyState s) {
+  float e = radians(s.moonElevation), a = radians(s.moonAzimuth);
+  return vector(sin(a)*cos(e), sin(e), cos(a)*cos(e));
+}
+float skyV1_moonLight(SkyState s) { return s.moonBrightness*smoothstep(-3.0,3.0,s.moonElevation); }
+// Scattered moonlight: a faint Rayleigh-blue lift of the whole night sky plus
+// an aureole around the moon. Only at night (the daytime sky swamps it).
+vector skyV1_moonSky(SkyState s,vector rd) {
+  float k = skyV1_moonLight(s)*skyV1_night(s);
+  vector m = skyV1_moonDir(s);
+  float up = max(rd[1],0.0), mu = dot(rd,m);
+  float separation = sqrt(max(2.0*(1.0-mu),0.0));
+  vector sky = vector(0.0035,0.0075,0.018)*(0.75+0.25*mu*mu)*(0.6+0.4*exp(-up*2.5));
+  vector aureole = vector(0.010,0.013,0.018)*(1.5*exp(-separation/0.06)+1.0*exp(-separation/0.35));
+  return (sky+aureole)*k;
+}
+vector skyV1_moonDisk(SkyState s,vector rd) {
+  vector m = skyV1_moonDir(s);
+  float angle = acos(clamp(dot(rd,m),-1.0,1.0));
+  float disk = 1.0-smoothstep(SKYV1_MOON_RADIUS-SKYV1_PIXEL_ANGLE,SKYV1_MOON_RADIUS+SKYV1_PIXEL_ANGLE,angle);
+  float maria = 0.72+0.36*world_noise3(rd*420.0+vector(3.0,7.0,1.0));
+  return vector(1.0,1.04,1.10)*1.3*maria*disk*skyV1_moonLight(s);
+}
+
+// ---- Haze (aerosol whitening, broad halo, luminous horizon) ------------------
+// A grey, optically thick aerosol veil lit by sunlight: it whitens the day sky,
+// widens the solar halo and makes the horizon glow. Its colour follows
+// sunGlowColor (see skyV1_sunTint).
+float skyV1_hazeVeil(SkyState s,float up) {
+  return 1.0-exp(-s.haze*(0.24+2.2*exp(-up*4.5)));
+}
+vector skyV1_hazeColor(SkyState s,vector rd, vector sun) {
+  float mu = clamp(dot(rd,sun),-1.0,1.0);
+  float separation = sqrt(max(2.0*(1.0-mu),0.0));
+  float halo = 1.4*exp(-separation/0.10)+0.45*exp(-separation*separation/0.30)+0.50*exp(-separation/0.7);
+  vector light = skyV1_lightTransmittance(s,skyV1_lightElevation(s,sun),1.0,1.0)*skyV1_daylight(s);
+  // Multiple scattering inside the aerosol layer desaturates the reddened light.
+  light = mix(vector(dot(light,SKYV1_LUMA))*skyV1_sunTint(s),vector(dot(light,SKYV1_LUMA)),0.3);
+  vector lit = light*vector(1.0,0.95,0.88)*(SKYV1_HAZE_ISO+SKYV1_HAZE_HALO*halo*(0.6+0.4*s.haze));
+  lit += vector(0.004,0.008,0.016)*skyV1_nightGlow(s);
+  return lit+skyV1_moonSky(s,rd)*2.0;
+}
+
+// ---- Storm and clouds -------------------------------------------------------
+float skyV1_cloudLight(SkyState s) {
+  return smoothstep(-10.0,8.0,s.sunElevation)*mix(0.20,1.0,smoothstep(-3.0,18.0,s.sunElevation));
+}
+// Open sky under a storm turns pale grey-blue.
+vector skyV1_stormOpen(SkyState s,vector c) {
+  return mix(c,vector(dot(c,SKYV1_LUMA))*vector(0.90,0.98,1.10)*1.1,0.5*s.storm);
+}
+// Rain / mist colour for the horizon band below the deck.
+vector skyV1_mist(SkyState s) {
+  return vector(0.16,0.185,0.215)*skyV1_cloudLight(s)*(1.0-0.4*s.storm)
+    +vector(0.004,0.007,0.014)*skyV1_nightGlow(s)+skyV1_moonSky(s,vector(0,0.05,0.9987))*1.5;
+}
+// R8 soft, sky-lit clouds (original code; R7 noise layout, public techniques:
+// iq "directional derivative" article, Schneider 2015, Hillaire 2016).
+// One texture read = eight lattice corners using paired adjacent z slices.
+// PNG row zero stays GL row zero (no upload flip); no colour conversion.
+float skyV1_noiseTex3(SkyState s,vector p) {
+  vector c = floor(p), f = fract(p);
+  f = f*f*(3.0-2.0*f);
+  vector uv = (v2(c[0],c[1])+v2(37.0,17.0)*c[2]+v2(f[0],f[1])+0.5)/256.0;
+  color texel = skyV1_fetch(s,uv[0],uv[1]);
+  vector slices = v2(texel[1],texel[0]);
+  return mix(slices[0],slices[1],f[2]);
+}
+// fBm with distance LOD: missing octaves fall back to their mean (0.5).
+float skyV1_cloudField(SkyState s,vector p_in, float lod) {
+  vector p = p_in;
+  float v = 0.52*skyV1_noiseTex3(s,p);
+  p = p*2.07+vector(13.1,5.7,19.3);
+  v += 0.26*skyV1_noiseTex3(s,p);
+  p = p*2.13+vector(7.7,23.3,3.1);
+  float l3 = clamp(lod*3.0-0.0,0.0,1.0);
+  v += 0.13*(l3 > 0.0 ? mix(0.5,skyV1_noiseTex3(s,p),l3) : 0.5);
+  p = p*2.03+vector(17.9,9.3,11.1);
+  float l4 = clamp(lod*3.0-1.0,0.0,1.0)*(1.0-0.5*s.cloudSoftness);
+  v += 0.065*(l4 > 0.0 ? mix(0.5,skyV1_noiseTex3(s,p),l4) : 0.5);
+  p = p*2.09+vector(2.7,29.1,5.3);
+  float l5 = clamp(lod*3.0-2.0,0.0,1.0)*(1.0-0.7*s.cloudSoftness);
+  v += 0.035*(l5 > 0.0 ? mix(0.5,skyV1_noiseTex3(s,p),l5) : 0.5);
+  return v;
+}
+// Large-scale weather: where clouds gather and where the sky stays open.
+float skyV1_cloudWeather(SkyState s,vector xz) {
+  float w = 0.65*skyV1_noiseTex3(s,vector(xz[0]*0.11,xz[1]*0.11,4.3))+0.35*skyV1_noiseTex3(s,vector(xz[0]*0.29,xz[1]*0.29,9.7));
+  return w;
+}
+// Density 0..~1 (soft ramp, no hard cut). h = 0 at cloud base, 1 at top.
+float skyV1_cloudDensityAt(SkyState s,vector p, float lod, vector drift, float bottom, float thickness, float weather) {
+  float soft = s.cloudSoftness, storm = s.storm;
+  // Lumpy base for grey decks: the base dips where the weather is heavy.
+  float deck = max(storm,soft*smoothstep(0.8,1.0,s.cloudCover));
+  float h = (p[1]-bottom+deck*0.2*thickness*(weather-0.5)*2.0)/thickness;
+  if (h <= 0.0 || h >= 1.0) return 0.0;
+  vector q = vector(p[0],p[1]*1.3,p[2])*(s.cloudScale*0.42);
+  q[0] += drift[0]+7.2; q[2] += drift[1]-2.6;
+  q[1] *= mix(1.0,0.45,soft); // stratus: stretched, layered
+  float field = skyV1_cloudField(s,q,lod);
+  // Local coverage: global cover modulated by the weather map.
+  float cover = clamp(s.cloudCover+(weather-0.5)*mix(0.6,0.3,max(soft,storm))*(1.0-smoothstep(0.75,1.0,s.cloudCover)),0.0,1.0);
+  // Cumulus profile: flat base, rounded tops (threshold rises with height).
+  // Stratus: thin uniform slab.
+  float baseRamp = smoothstep(0.0,mix(0.06,0.25,soft),h);
+  float topErode = mix(h*h*0.55,smoothstep(0.55,1.0,h)*0.5,soft);
+  float threshold = mix(0.66,0.30,cover)+topErode;
+  float d = (field-threshold)*mix(4.2,2.4,soft);
+  d = clamp(d,0.0,1.0)*baseRamp*(1.0-smoothstep(0.92,1.0,h));
+  return d;
+}
+// Distance along a ray (sine of elevation mu) to altitude h above a round planet.
+float skyV1_cloudShell(SkyState s,float mu, float h) {
+  float r = SKYV1_CLOUD_PLANET;
+  return sqrt(r*r*mu*mu+2.0*r*h+h*h)-r*mu;
+}
+float skyV1_cloudHG(SkyState s,float mu, float g) {
+  return (1.0-g*g)/pow(max(1.0+g*g-2.0*g*mu,1e-3),1.5);
+}
+// Ground observer: intersect a finite altitude band, then march only inside.
+CloudResult skyV1_clouds(SkyState s,vector rd, vector sun) {
+  if (rd[1] <= 0.008) return cloudResult(vector(0),0);
+  float storm = s.storm, soft = s.cloudSoftness;
+  float bottom = mix(2.6,1.9,storm);
+  float thickness = mix(2.2,0.9,soft)+0.8*storm;
+  // The layer follows the planet's curve: distant clouds sink toward the
+  // horizon at a finite distance instead of running on forever.
+  float t = skyV1_cloudShell(s,rd[1],bottom), end = skyV1_cloudShell(s,rd[1],bottom+thickness);
+  if (t >= end) return cloudResult(vector(0),0);
+  float wind = radians(s.cloudWindDirection);
+  vector drift = v2(0.028,0.009);
+  drift = v2(drift[0]*cos(wind)-drift[1]*sin(wind),drift[0]*sin(wind)+drift[1]*cos(wind));
+  drift *= s.time*s.cloudSpeed;
+  float jitter = world_hash13(floor(rd*16384.0));
+
+  // ---- Light from the actual sky ---------------------------------------
+  float night = skyV1_night(s);
+  float moon = skyV1_moonLight(s)*night;
+  vector lightDir = normalize(mix(sun,skyV1_moonDir(s),night*step(0.001,moon)));
+  lightDir[1] = max(lightDir[1],0.03); // low sun still grazes cloud sides
+  lightDir = normalize(lightDir);
+  // Direct light reaching the cloud layer, same transmittance as the sky uses.
+  vector sunLight = skyV1_lightTransmittance(s,skyV1_lightElevation(s,sun),1.0,1.0)*skyV1_daylight(s);
+  sunLight = vector(dot(sunLight,SKYV1_LUMA))*skyV1_sunTint(s);
+  sunLight *= smoothstep(-6.0,-0.5,s.sunElevation)*1.15;
+  vector moonLight = vector(0.020,0.028,0.045)*moon;
+  vector keyLight = mix(sunLight,moonLight,night)*(1.0-0.6*storm);
+  // Ambient = what the sky dome actually looks like (zenith above, horizon around).
+  vector skyUp = skyV1_base(s,vector(0.0,1.0,0.0))+skyV1_moonSky(s,vector(0.0,1.0,0.0));
+  vector skyAround = 0.5*(skyV1_base(s,normalize(vector(sun[0],0.12,sun[2])))+skyV1_base(s,normalize(vector(-sun[0],0.12,-sun[2]))));
+  float twilight = 1.0-smoothstep(-4.0,4.0,s.sunElevation);
+  vector ambTop = (skyUp*0.9+skyAround*0.35)*(1.0-0.35*twilight);
+  vector ambBottom = (skyAround*0.22+skyUp*0.08)*(1.0-0.45*twilight); // underside: horizon ring and ground
+  // A cloud gathers light from the whole dome and the sunlit ground, so its
+  // shade is paler and less blue than the sky itself.
+  ambTop = mix(ambTop,vector(dot(ambTop,SKYV1_LUMA))*1.25,0.5);
+  ambBottom = mix(ambBottom,vector(dot(ambBottom,SKYV1_LUMA)),0.5)+sunLight*0.10*max(lightDir[1],0.0)*(1.0-night);
+  ambTop = skyV1_stormOpen(s,ambTop); ambBottom = skyV1_stormOpen(s,ambBottom);
+  // Sky directly behind the cloud, for aerial perspective.
+  vector behind = skyV1_stormOpen(s,skyV1_base(s,rd)+skyV1_moonSky(s,rd));
+  float mu = dot(rd,lightDir);
+  float phase = 0.75*skyV1_cloudHG(s,mu,0.55)+0.25*skyV1_cloudHG(s,mu,-0.25); // ~1 on average
+  float sigma = (1.0+1.2*storm)*2.3*pow(s.cloudDensity,1.35);
+
+  vector sum = vector(0.0); float trans = 1.0;
+  float step0 = 0.035+0.012*t;
+  t += step0*jitter;
+  for (int i=0; i<96; ++i) {
+    if (t >= end || trans < 0.01) break;
+    float stepLength = min(0.035+0.012*t,end-t);
+    vector p = rd*(t+0.5*stepLength);
+    // Work in layer coordinates: y = altitude above the curved ground.
+    p[1] = length(p+vector(0.0,SKYV1_CLOUD_PLANET,0.0))-SKYV1_CLOUD_PLANET;
+    float lod = 1.0-smoothstep(4.0,30.0,t*max(s.cloudScale/2.4,0.5));
+    float weather = skyV1_cloudWeather(s,(v2(p[0],p[2])+drift)*s.cloudScale*0.42);
+    float density = skyV1_cloudDensityAt(s,p,lod,drift,bottom,thickness,weather);
+    if (density > 0.002) {
+      // Two taps toward the light: optical depth to the sun through the cloud.
+      // Taps reach well into the layer so whole cloud bodies shadow their bases.
+      float ls1 = thickness*0.16, ls2 = thickness*0.5;
+      float d1 = skyV1_cloudDensityAt(s,p+lightDir*ls1,lod*0.5,drift,bottom,thickness,weather);
+      float d2 = skyV1_cloudDensityAt(s,p+lightDir*ls2,0.0,drift,bottom,thickness,weather);
+      float tau = 1.5*sigma*(density*ls1*0.5+d1*ls1*1.0+d2*(ls2-ls1));
+      // Single scattering keeps the forward peak (silver edges); the multiple-
+      // scattering tail is nearly isotropic, so thick backlit cores stay dark.
+      float single = exp(-tau)*phase;
+      // Bright fair-weather clouds glow from within; grey decks do not.
+      float grey = max(storm,soft*smoothstep(0.8,1.0,s.cloudCover));
+      float multi = mix(1.25,0.14,grey)*exp(-tau*mix(0.16,0.35,grey));
+      float powder = mix(1.0,1.0-exp(-density*sigma*0.8),0.3);
+      float h = clamp((p[1]-bottom)/thickness,0.0,1.0);
+      // Sky light reaching this starPoint is dimmed by the cloud column above it.
+      // Diffusion keeps even a thick deck's base grey, never black.
+      float column = sigma*thickness*(1.0-h)*(0.15+0.35*s.cloudCover);
+      float through = mix(0.32,1.0,exp(-column*0.35));
+      vector ambient = mix(ambBottom,ambTop,h*h*(3.0-2.0*h))*through*(1.0-0.3*density);
+      // Sunlight diffusing down through a closed deck (what lights overcast bases).
+      ambient += keyLight*0.10*mix(0.35,1.0,exp(-column*0.2))*max(storm,soft)*smoothstep(0.7,1.0,s.cloudCover);
+      vector S = keyLight*(single+multi)*powder+ambient;
+      // Low sun: light from the bright horizon reaches cloud bases from below.
+      S += sunLight*skyV1_warmFill(s)*(1.0-h)*(1.0-h)*0.55*exp(-density*sigma*0.15)*(1.0-storm);
+      // Storm: dark cells and lighter gaps in the base.
+      // Grey decks (storm, overcast): broad darker cells and lighter thin patches.
+      float deck = max(storm,soft*smoothstep(0.8,1.0,s.cloudCover));
+      vector cq = (v2(p[0],p[2])+drift)*s.cloudScale;
+      float cellField = 0.4*weather+0.4*skyV1_noiseTex3(s,pack(cq*0.55,7.0))+0.2*skyV1_noiseTex3(s,pack(cq*1.4,11.0));
+      float cellDark = smoothstep(0.30,0.58,cellField);
+      S *= 1.0-deck*(0.40+0.40*storm)*cellDark;
+      // Aerial perspective: distant clouds melt into the sky behind them.
+      float fog = 1.0-exp(-t*(0.032+0.020*s.haze+0.004*SKYV1_TURBIDITY));
+      S = mix(S,behind,fog);
+      // Energy-conserving integration of a slab (albedo 1).
+      float ext = sigma*density;
+      float a = exp(-ext*stepLength);
+      sum += trans*S*(1.0-a);
+      trans *= a;
+    }
+    t += stepLength;
+  }
+  float opacity = 1.0-trans;
+  return cloudResult(sum/max(opacity,1e-5),opacity*smoothstep(0.008,0.045,rd[1]));
+}
+
+// ---- Night effects (categorical nightEffect; added radiance) ---------------
+float skyV1_effectFade(SkyState s) {
+  return 1.0-smoothstep(SKYV1_EFFECT_FADE_LO,SKYV1_EFFECT_FADE_HI,s.sunElevation);
+}
+// Fixed-octave fBm (world_fbm2/3 unrolled so ports need no loop).
+float skyV1_fbm2(SkyState s,vector p_in) {
+  vector p = p_in;
+  float v = 0.5*world_noise2(p); p = p*2.03+17.1;
+  v += 0.25*world_noise2(p); p = p*2.03+17.1;
+  v += 0.125*world_noise2(p);
+  return v/0.875;
+}
+float skyV1_fbm3(SkyState s,vector p_in) {
+  vector p = p_in;
+  float v = 0.5*world_noise3(p); p = p*2.03+17.1;
+  v += 0.25*world_noise3(p); p = p*2.03+17.1;
+  v += 0.125*world_noise3(p); p = p*2.03+17.1;
+  v += 0.0625*world_noise3(p);
+  return v/0.9375;
+}
+// Six fixed celestial cube faces avoid the polar crowding of longitude grids.
+vector skyV1_face(SkyState s,vector rd, output float seed) {
+  vector a = abs(rd);
+  if (a[0] >= a[1] && a[0] >= a[2]) { seed = rd[0] > 0.0 ? 13.0 : 31.0; return v2(rd[1],rd[2])/a[0]; }
+  if (a[1] >= a[2]) { seed = rd[1] > 0.0 ? 47.0 : 61.0; return v2(rd[0],rd[2])/a[1]; }
+  seed = rd[2] > 0.0 ? 79.0 : 97.0; return v2(rd[0],rd[1])/a[2];
+}
+// Scintillation: each star flickers at its own pace, more near the horizon
+// where its light crosses more air.
+float skyV1_twinkle(SkyState s,float id, float up) {
+  float depth = mix(0.10,0.55,exp(-max(up,0.0)*3.5));
+  float a = sin(s.time*(2.3+5.1*id)+id*61.0), b = sin(s.time*(6.7+7.9*fract(id*7.3))+id*17.0);
+  return 1.0+depth*(0.6*a+0.4*b);
+}
+// ---- Stars ---------------------------------------------------------------
+// Three fixed layers: many faint stars, fewer bright ones with a soft glow.
+// Star size is a fixed angle (about one pixel at 1080p / 60 deg), no fwidth.
+vector skyV1_stars(SkyState s,vector rd) {
+  if (rd[1] <= 0.0 || s.stars <= 0.0 || skyV1_night(s) <= 0.0) return vector(0.0);
+  float seed;
+  vector face = skyV1_face(s,rd,seed);
+  float amount = clamp(s.stars,0.0,2.0);
+  vector stars = vector(0.0);
+  for (int j = 0; j < 3; ++j) {
+    float layer = float(j), scale = 46.0+layer*62.0;
+    vector p = (face*0.5+0.5)*scale;
+    vector cell = floor(p)+seed*23.0+layer*211.0;
+    float id = world_hash12(cell+5.0);
+    // More of the faint stars come out as the stars value rises.
+    float present = step(world_hash12(cell+63.0),(0.045+0.01*layer)*(0.45+0.55*min(amount,1.5)));
+    vector delta = fract(p)-(0.25+0.5*v2(world_hash12(cell+11.0),world_hash12(cell-19.0)));
+    float r2 = dot2(delta,delta)/skyV1_sq(s,scale*SKYV1_STAR_ANGLE*0.5);
+    float luminosity = pow(world_hash12(cell+89.0),2.5+layer*2.5);
+    float energy = mix(0.06,1.0,luminosity)*(3.0-layer*1.1);
+    // Brighter stars are slightly larger; the halo reaches barely past the core.
+    float bright = smoothstep(0.5,2.0,energy);
+    r2 /= 1.0+0.7*bright;
+    float starPoint = exp(-r2)+0.12*bright*exp(-r2/1.5);
+    float heat = world_hash12(cell+41.0);
+    vector tint = mix(mix(vector(0.62,0.76,1.0),vector(1.0,0.97,0.92),smoothstep(0.0,0.55,heat)),
+      vector(1.0,0.76,0.50),smoothstep(0.65,1.0,heat));
+    stars += tint*(starPoint*energy*present*skyV1_twinkle(s,id,rd[1]));
+  }
+  return stars*2.2*s.stars*skyV1_sq(s,skyV1_night(s))*smoothstep(0.0,0.15,rd[1]);
+}
+// Stars clustered along the galactic band (on top of the base stars).
+// g is the direction in the galactic frame, so they turn with the band.
+vector skyV1_galaxyStars(SkyState s,vector g, float latitude, float richness) {
+  float seed;
+  vector face = skyV1_face(s,g,seed);
+  // Dense in the band, thinning out gradually far from it (never empty).
+  float clustering = (0.75*exp(-latitude*latitude/0.035)+0.40*exp(-abs(latitude)/0.40))*richness+0.10;
+  vector stars = vector(0.0);
+  for (int j = 0; j < 3; ++j) {
+    float layer = float(j), scale = 115.0+layer*118.0;
+    vector p = (face*0.5+0.5)*scale;
+    vector cell = floor(p)+seed*19.0+layer*307.0;
+    float h = world_hash12(cell);
+    vector center = 0.18+0.64*v2(world_hash12(cell+7.0),world_hash12(cell+23.0));
+    vector delta = fract(p)-center;
+    float footprint = SKYV1_GALAXY_STAR_FOOTPRINT;
+    float area = 0.0035+footprint*footprint*0.12;
+    float starPoint = exp(-dot2(delta,delta)/area)*0.0035/area;
+    starPoint *= step(h,0.7*(0.012+0.20*clustering)*(1.0+layer*0.5));
+    vector tint = mix(vector(0.56,0.72,1.0),vector(1.0,0.78,0.53),world_hash12(cell+41.0));
+    float luminosity = world_hash12(cell+67.0);
+    stars += tint*starPoint*(0.035+3.5*pow(luminosity,10.0))*skyV1_twinkle(s,h*37.0+luminosity,0.5);
+  }
+  return stars*1.35;
+}
+// Four fixed octaves of the shared texture noise.
+float skyV1_galaxyFbm(SkyState s,vector p_in) {
+  vector p = p_in;
+  float v = 0.5*skyV1_noiseTex3(s,p); p = p*2.03+vector(17.1,3.3,9.7);
+  v += 0.25*skyV1_noiseTex3(s,p); p = p*2.07+vector(5.9,21.3,13.1);
+  v += 0.125*skyV1_noiseTex3(s,p); p = p*2.11+vector(11.7,7.1,29.3);
+  v += 0.0625*skyV1_noiseTex3(s,p);
+  return v/0.9375;
+}
+// Effect 1: Milky Way (original code). Everything is computed in a galactic
+// frame (x toward the core, z = galactic pole), so tilt/azimuth turn the band,
+// its dust and its stars together. A band that swells into a warm bulge at the
+// core, star clouds, a meandering central rift with dust filaments that redden
+// what shines through, and a grain of unresolved stars.
+vector skyV1_milkyWay(SkyState s,vector rd) {
+  float t = radians(s.milkyWayTilt), a = radians(s.milkyWayAzimuth);
+  vector forward = vector(sin(a),0.0,cos(a));
+  vector side = vector(cos(a),0.0,-sin(a));
+  vector galNormal = side*sin(t)+vector(0,1,0)*cos(t);
+  vector across = cross(galNormal,forward);
+  vector g = vector(dot(rd,forward),dot(rd,across),dot(rd,galNormal));
+  // milkyWayWidth scales every across-band structure (band, rift, stars).
+  float latitude = g[2]/max(s.milkyWayWidth,0.05);
+  vector gw = vector(g[0],g[1],latitude);
+  float toCore = g[0]/max(length2(v2(g[0],g[1])),0.001); // cos(galactic longitude)
+  float inner = 0.5+0.5*toCore;               // 1 toward the core, 0 opposite
+  float bulge = pow(max(toCore,0.0),9.0)*exp(-latitude*latitude/0.05);
+  // Band: ragged edges, thicker and brighter toward the core.
+  float coarse = skyV1_galaxyFbm(s,gw*2.6+vector(21.0,8.0,3.0));
+  float clouds = skyV1_galaxyFbm(s,gw*6.5+vector(4.0,31.0,12.0));
+  float sigma = mix(0.075,0.150,inner*inner);
+  float ribbon = latitude+(coarse-0.5)*0.16;
+  float band = 0.72*exp(-ribbon*ribbon/(2.0*sigma*sigma))+0.28*exp(-ribbon*ribbon/(13.0*sigma*sigma));
+  float along = mix(0.20,1.0,pow(inner,1.6));
+  float starClouds = smoothstep(0.30,0.72,clouds);
+  float glow = band*along*(0.30+1.55*starClouds*starClouds);
+  // Dust: a central rift that wanders, plus filaments stretched along the band.
+  vector gd = vector(g[0],g[1],latitude*3.4);
+  float lanes = skyV1_galaxyFbm(s,gd*4.2+vector(9.0,2.0,17.0));
+  float wisps = skyV1_galaxyFbm(s,gd*10.5+vector(33.0,14.0,6.0));
+  float riftCentre = (coarse-0.5)*0.22+(lanes-0.5)*0.10;
+  float riftWidth = 0.022+0.050*inner*smoothstep(0.25,0.75,lanes);
+  float rift = exp(-skyV1_sq(s,(latitude-riftCentre)/riftWidth));
+  float filaments = smoothstep(0.52,0.74,0.6*lanes+0.4*wisps)*exp(-latitude*latitude/(5.0*sigma*sigma));
+  float dust = clamp(rift*(0.55+0.75*wisps)+filaments*0.9,0.0,1.0);
+  dust *= smoothstep(0.05,0.45,inner); // little dust toward the anticentre
+  // Dust removes blue first, so thin dust reddens and thick dust blacks out.
+  vector through = exp(-dust*vector(2.1,2.7,3.6));
+  // Cool arms, warm core.
+  vector hue = mix(vector(0.040,0.056,0.105),vector(0.150,0.108,0.068),clamp(bulge*1.6+0.25*inner*inner,0.0,1.0));
+  hue = mix(hue,hue*vector(1.25,0.95,0.85),smoothstep(0.55,0.85,wisps)*0.5);
+  vector milk = hue*glow*1.5+vector(0.070,0.046,0.030)*bulge;
+  // Faint wide halo so the band does not end in a hard edge.
+  milk += vector(0.006,0.008,0.014)*along*exp(-latitude*latitude/0.10);
+  // Far from the band the sky still carries a mottled glow of distant stars.
+  milk += vector(0.0045,0.0060,0.0105)*(0.45+0.55*inner)*exp(-abs(latitude)/0.42)*(0.35+2.6*coarse*clouds);
+  // Unresolved stars: fine grain that follows the brightness.
+  float grain = world_noise3(g*430.0);
+  milk *= 0.82+0.60*grain*grain;
+  milk *= through;
+  vector radiance = milk+skyV1_galaxyStars(s,g,latitude,along*(0.5+starClouds))*mix(vector(1.0),through,0.7);
+  // Moonlight washes the faint band out.
+  float wash = 1.0/(1.0+skyV1_moonLight(s)*0.6);
+  return radiance*s.milkyWayBrightness*wash*smoothstep(0.0,0.12,rd[1]);
+}
+// auroraHue: 0 green, 0.5 green with violet tops, 1 red/magenta.
+void skyV1_auroraColors(SkyState s,output vector lower, output vector upper) {
+  float h = clamp(s.auroraHue,0.0,1.0);
+  lower = mix(mix(vector(0.20,1.0,0.30),vector(0.10,1.0,0.55),smoothstep(0.0,0.5,h)),vector(1.0,0.16,0.32),smoothstep(0.5,1.0,h));
+  upper = mix(mix(vector(0.10,0.85,0.45),vector(0.50,0.24,1.0),smoothstep(0.0,0.5,h)),vector(0.80,0.06,0.38),smoothstep(0.5,1.0,h));
+}
+// Draw emission in sky angles. Sampling around a unit circle keeps the pattern
+// continuous across north and gives the horizon the same spacing as the upper sky.
+vector skyV1_aurora(SkyState s,vector rd) {
+  if (rd[1] <= 0.0 || s.auroraIntensity <= 0.0) return vector(0.0);
+  float heading = atan2(rd[0],rd[2]+1e-8)-radians(s.auroraAzimuth);
+  vector arc = v2(cos(heading),sin(heading));
+  float spread = radians(s.auroraSpread)*0.5;
+  float sector = s.auroraSpread >= 359.5 ? 1.0 :
+      1.0-smoothstep(0.6*spread,spread,acos(clamp(arc[0],-1.0,1.0)));
+  if (sector <= 0.0) return vector(0.0);
+
+  float time = s.time*s.auroraSpeed*0.08;
+  float altitude = asin(clamp(rd[1],0.0,1.0));
+  float drift = heading + 0.18*sin(time);
+  vector path = v2(cos(drift),sin(drift));
+  float undulation = skyV1_noiseTex3(s,pack(path*2.8+8.1,time));
+  // A low sweeping band with a soft underside and a much wider colored veil.
+  float edge = s.auroraHeight-0.22 + 0.14*sin(1.0*drift-0.9)
+      + 0.065*sin(3.0*drift+0.5) + 0.055*(undulation-0.5);
+  float above = altitude-edge;
+  float rise = max(0.0,above);
+  float rayAngle = drift-0.45*rise+0.09*sin(3.0*drift+time+rise);
+  vector rayDir = v2(cos(rayAngle),sin(rayAngle));
+  float body = skyV1_noiseTex3(s,pack(rayDir*3.4+17.5,time));
+  float grain = skyV1_noiseTex3(s,pack(rayDir*17.0*SKYV1_AURORA_DENSITY+7.8,time*1.4));
+  float width = 0.125+0.16*body;
+  float veil = smoothstep(-0.075,0.035,above)*exp(-rise*rise/(width*width));
+  vector lower, upper;
+  skyV1_auroraColors(s,lower,upper);
+  float spectrum = 1.0-abs(2.0*s.auroraHue-1.0);
+  float blush = smoothstep(-0.15,0.80,sin(drift+0.15));
+  upper = mix(upper,vector(0.98,0.12,0.56),spectrum*blush);
+  vector result = mix(lower,upper,smoothstep(0.018,0.28,rise));
+  vector light = result*veil*(0.08+0.64*body)*(0.42+0.72*grain);
+
+  // A wide turning fold sweeps up from the band. Its angular footprint
+  // broadens towards the crown and fades gently into the surrounding sky.
+  float h = altitude-s.auroraHeight+0.45;
+  float turn = 0.02+0.46*sin(3.6*h-0.8)+0.065*sin(6.0*h+time);
+  float across = 2.0*sin(0.5*(drift-turn));
+  float span = 0.065+0.20*smoothstep(0.08,0.92,h);
+  float core = across/span;
+  float fold = exp(-core*core)*smoothstep(0.12,0.38,h);
+  float fringe = (across+span*0.80)/(span*1.8);
+  vector crest = mix(lower,vector(0.012,1.0,0.53),spectrum);
+  float spine = core+0.42+0.12*sin(9.0*h+time);
+  light += (crest*fold*(0.36+0.78*exp(-6.0*spine*spine))
+      + mix(crest,upper,0.57)*exp(-fringe*fringe)*smoothstep(0.14,0.47,h)*0.08)
+      *(0.72+0.28*grain);
+  return light*sector*s.auroraIntensity*smoothstep(0.0,0.08,altitude)
+      *(1.0-smoothstep(1.22,1.55,altitude));
+}
+vector skyV1_effects(SkyState s,vector rd) {
+  float fade = skyV1_effectFade(s);
+  if (fade <= 0.0) return vector(0.0);
+  if (s.nightEffect == 1) return skyV1_milkyWay(s,rd)*fade;
+  if (s.nightEffect == 2) return skyV1_aurora(s,rd)*fade;
+  return vector(0.0);
+}
+
+// ---- Aerial terms applied over sky and clouds ------------------------------
+vector skyV1_aerial(SkyState s,vector result_in, vector rd, vector sun) {
+  vector result = result_in;
+  float up = max(rd[1],0.0);
+  if (s.haze > 0.0) {
+    vector haze = skyV1_hazeColor(s,rd,sun);
+    result = mix(result,haze,skyV1_hazeVeil(s,up));
+    result += haze*s.haze*0.4*exp(-up/0.045);
+  }
+  if (s.storm > 0.0) {
+    float rain = s.storm*(1.0-exp(-exp(-up*7.0)*1.8));
+    result = mix(result,skyV1_mist(s),rain*0.85);
+  }
+  return result;
+}
+
+// ---- Portable entry starPoint --------------------------------------------------
+// rd: unit view direction in sky space (Y-up). Returns linear HDR radiance.
+// Order: base (+moon sky, storm grey) + sun disk -> + stars, moon disk,
+// night effect -> clouds over that (so clouds hide effects) -> haze/rain.
+vector skyV1_radiance(SkyState s,vector rd) {
+  vector sun = skyV1_solarDir(s);
+  vector result = skyV1_stormOpen(s,skyV1_base(s,rd)+skyV1_moonSky(s,rd));
+  if (rd[1] < 0.0) {
+    // Below the horizon: fade to the diffuse ground-facing fill.
+    vector upper = skyV1_base(s,vector(0,1,0));
+    vector horizonDir = normalize(vector(-sun[2],0.18,sun[0]));
+    vector horizon = skyV1_base(s,horizonDir);
+    vector ground = mix(horizon*0.34,(upper+horizon)*0.32,s.cloudCover*0.4);
+    ground += mix(vector(0.095,0.035,0.019),vector(0.095,0.027,0.050),skyV1_pink(s))
+      *skyV1_horizonTint(s,0.0)*skyV1_warmFill(s)*(0.4+0.6*s.cloudCover);
+    ground = skyV1_stormOpen(s,ground+skyV1_moonSky(s,horizonDir)*0.6);
+    result = mix(result,ground,smoothstep(0.0,0.2,-rd[1]));
+    return max(skyV1_aerial(s,result,normalize(vector(rd[0]+0.0001,0.0,rd[2])),sun),vector(0.0));
+  }
+  if (s.sunElevation >= 0.0) {
+    float angle = acos(clamp(dot(rd,sun),-1.0,1.0));
+    float disk = 1.0-smoothstep(SKYV1_SUN_RADIUS-SKYV1_PIXEL_ANGLE,SKYV1_SUN_RADIUS+SKYV1_PIXEL_ANGLE,angle);
+    result += skyV1_lightTransmittance(s,sun[1],1.0,1.0)*disk*28.0*exp(-2.2*s.haze);
+  }
+  vector stars = skyV1_stars(s,rd)/(1.0+skyV1_moonLight(s)*0.9*skyV1_night(s));
+  result += skyV1_moonDisk(s,rd);
+  result += skyV1_effects(s,rd);
+  if (s.cloudCover > 0.0) {
+    CloudResult cloud = skyV1_clouds(s,rd,sun);
+    result = mix(result,cloud.rgb,cloud.a);
+    // Point lights are far brighter than the sky, so even thin cloud must hide them.
+    stars *= skyV1_sq(s,skyV1_sq(s,1.0-cloud.a));
+  }
+  result += stars;
+  return max(skyV1_aerial(s,result,rd,sun),vector(0.0));
+}
+
+
+shader skyV1(
+  float sunElevation = 8.000000000,
+  float sunAzimuth = 20.000000000,
+  float haze = 0.000000000,
+  float horizonWarmth = 0.000000000,
+  color zenithColor = color(0.078187,0.212231,0.479320),
+  color horizonColor = color(0.871367,0.564712,0.278894),
+  color sunGlowColor = color(1.000000,0.450786,0.063010),
+  float cloudCover = 0.400000000,
+  float cloudDensity = 1.200000000,
+  float cloudScale = 1.000000000,
+  float cloudSoftness = 0.000000000,
+  float storm = 0.000000000,
+  float stars = 0.800000000,
+  float moonElevation = 25.000000000,
+  float moonAzimuth = -150.000000000,
+  float moonBrightness = 0.000000000,
+  float nightBrightness = 1.000000000,
+  int nightEffect = 0,
+  float milkyWayBrightness = 1.000000000,
+  float auroraIntensity = 1.200000000,
+  float auroraHue = 0.500000000,
+  float milkyWayTilt = 58.000000000,
+  float milkyWayAzimuth = 12.000000000,
+  float milkyWayWidth = 1.000000000,
+  float auroraAzimuth = 0.000000000,
+  float auroraSpread = 360.000000000,
+  float auroraHeight = 0.450000000,
+  float auroraSpeed = 0.350000000,
+  float cloudSpeed = 0.120000000,
+  float cloudWindDirection = 0.000000000,
+  // OSL reserves time as a global; Blender socket label is exactly time.
+  float timeSeconds = 0 [[ string label = "time" ]],
+  string noiseTexture = "",
+  output color Radiance = 0
+) {
+  SkyState s;
+  s.sunElevation = sunElevation;
+  s.sunAzimuth = sunAzimuth;
+  s.haze = haze;
+  s.horizonWarmth = horizonWarmth;
+  s.zenithColor = vector(zenithColor);
+  s.horizonColor = vector(horizonColor);
+  s.sunGlowColor = vector(sunGlowColor);
+  s.cloudCover = cloudCover;
+  s.cloudDensity = cloudDensity;
+  s.cloudScale = cloudScale;
+  s.cloudSoftness = cloudSoftness;
+  s.storm = storm;
+  s.stars = stars;
+  s.moonElevation = moonElevation;
+  s.moonAzimuth = moonAzimuth;
+  s.moonBrightness = moonBrightness;
+  s.nightBrightness = nightBrightness;
+  s.nightEffect = nightEffect;
+  s.milkyWayBrightness = milkyWayBrightness;
+  s.auroraIntensity = auroraIntensity;
+  s.auroraHue = auroraHue;
+  s.milkyWayTilt = milkyWayTilt;
+  s.milkyWayAzimuth = milkyWayAzimuth;
+  s.milkyWayWidth = milkyWayWidth;
+  s.auroraAzimuth = auroraAzimuth;
+  s.auroraSpread = auroraSpread;
+  s.auroraHeight = auroraHeight;
+  s.auroraSpeed = auroraSpeed;
+  s.cloudSpeed = cloudSpeed;
+  s.cloudWindDirection = cloudWindDirection;
+  s.time = timeSeconds;
+  s.noiseTexture = noiseTexture;
+  // Cycles world I points towards the camera. Convert only at entry.
+  vector b = -normalize(transform("common","world",I));
+  vector rd = vector(b[0],b[2],b[1]);
+  Radiance = color(skyV1_radiance(s,rd));
+}

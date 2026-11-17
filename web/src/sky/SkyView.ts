@@ -88,6 +88,14 @@ export class SkyView {
     uniforms.u_exposure.value = theta.exposure ?? 1;
   }
 
+  /** The sky's own uniforms (θ, time, noise), shared by reference with other sky materials. */
+  skyUniforms(): Record<string, THREE.IUniform> {
+    const u = this.material.uniforms;
+    const shared: Record<string, THREE.IUniform> = { iTime: u.iTime, skyV1_noiseTexture: u.skyV1_noiseTexture };
+    for (const s of skyUniforms) shared[s.uniform] = u[s.uniform];
+    return shared;
+  }
+
   setTime(seconds: number): void {
     this.material.uniforms.iTime.value = seconds;
   }

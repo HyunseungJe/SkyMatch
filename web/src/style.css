@@ -81,7 +81,40 @@ body {
   font: 12px/1.5 ui-monospace, Consolas, monospace;
 }
 
-#panel button {
+/* ---- Export bar: theta JSON and EXR panorama ---- */
+#export {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  max-width: calc(100vw - 330px);
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(10, 14, 22, 0.62);
+  backdrop-filter: blur(8px);
+}
+
+#export .divider {
+  width: 1px;
+  align-self: stretch;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+#export-status {
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+
+#export-status.error {
+  color: #ffb4a8;
+}
+
+#panel button,
+#export button,
+#export select {
   padding: 3px 10px;
   border-radius: 5px;
   border: 1px solid rgba(255, 255, 255, 0.22);
@@ -91,7 +124,17 @@ body {
   cursor: pointer;
 }
 
-#panel button:hover {
+#export select {
+  margin-left: 6px;
+}
+
+#export button:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+#panel button:hover,
+#export button:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.12);
 }
 
@@ -188,6 +231,10 @@ body {
   accent-color: #8fb8ff;
 }
 
+.badge.display {
+  background: rgba(167, 139, 250, 0.28);
+}
+
 .param select {
   width: 100%;
   margin-top: 3px;
@@ -200,7 +247,8 @@ body {
 }
 
 body.no-ui #panel,
-body.no-ui #params {
+body.no-ui #params,
+body.no-ui #export {
   display: none;
 }
 

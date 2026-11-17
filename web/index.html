@@ -13,6 +13,19 @@
       <button id="reset" type="button" title="현재 프리셋 값으로 되돌립니다">되돌리기</button>
       <span id="stats"></span>
     </div>
+    <div id="export">
+      <button id="save-theta" type="button" title="지금 하늘의 파라미터를 JSON으로 저장합니다 (Blender·Godot·Unity에서 불러옴)">하늘 JSON 저장</button>
+      <button id="open-theta" type="button" title="저장한 하늘 JSON을 불러옵니다">불러오기</button>
+      <input id="theta-file" type="file" accept=".json,application/json" hidden />
+      <span class="divider"></span>
+      <label>EXR <select id="exr-target"></select></label>
+      <select id="exr-size" title="파노라마 크기 (가로×세로)">
+        <option value="8192">8192×4096</option>
+        <option value="4096">4096×2048</option>
+      </select>
+      <button id="export-exr" type="button" title="지금 하늘을 선형 HDR 파노라마(OpenEXR)로 굽습니다">EXR 내보내기</button>
+      <span id="export-status"></span>
+    </div>
     <aside id="params"></aside>
     <div id="status">하늘 셰이더를 준비하는 중입니다…</div>
     <pre id="bench" hidden></pre>

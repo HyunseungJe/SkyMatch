@@ -1,4 +1,6 @@
 import { runBench } from './bench';
+import { bakePanorama, PANORAMA_TARGETS, type PanoramaTarget } from './export/panorama';
+import { downloadBlob, thetaFromJson, thetaToJson } from './sky/thetaFile';
 import { defaultParams, presetNames, presetParams, type SkyParams } from './sky/schema';
 import { SkyView } from './sky/SkyView';
 import { createParamPanel, type ParamPanel } from './ui/paramPanel';
@@ -59,6 +61,55 @@ panel = createParamPanel(paramsElement, theta, () => {
 });
 yaw = queryNumber('yaw') ?? yaw;
 pitch = queryNumber('pitch') ?? pitch;
+
+// ---- Export: θ JSON and EXR panorama ----------------------------------------
+const exportStatus = document.querySelector<HTMLSpanElement>('#export-status')!;
+const thetaFileInput = document.querySelector<HTMLInputElement>('#theta-file')!;
+const exrTarget = document.querySelector<HTMLSelectElement>('#exr-target')!;
+const exrSize = document.querySelector<HTMLSelectElement>('#exr-size')!;
+const exrButton = document.querySelector<HTMLButtonElement>('#export-exr')!;
+for (const [key, target] of Object.entries(PANORAMA_TARGETS)) exrTarget.add(new Option(target.label, key));
+
+const fileStem = () => 'sky_' + (presetSelect.value || 'custom').replace(/\s+/g, '_');
+const showExportStatus = (text: string, error = false) => {
+  exportStatus.textContent = text;
+  exportStatus.classList.toggle('error', error);
+};
+
+document.querySelector<HTMLButtonElement>('#save-theta')!.addEventListener('click', () => {
+  downloadBlob(new Blob([thetaToJson(theta)], { type: 'application/json' }), `${fileStem()}.json`);
+});
+document.querySelector<HTMLButtonElement>('#open-theta')!.addEventListener('click', () => thetaFileInput.click());
+thetaFileInput.addEventListener('change', async () => {
+  const file = thetaFileInput.files?.[0];
+  thetaFileInput.value = '';
+  if (!file) return;
+  try {
+    theta = thetaFromJson(await file.text());
+    view.setParams(theta);
+    panel?.sync(theta);
+    presetSelect.value = CUSTOM;
+    showExportStatus(`${file.name}을(를) 불러왔습니다.`);
+  } catch (error) {
+    showExportStatus(`불러오지 못했습니다: ${error instanceof Error ? error.message : String(error)}`, true);
+  }
+});
+exrButton.addEventListener('click', async () => {
+  const target = exrTarget.value as PanoramaTarget;
+  const width = Number(exrSize.value);
+  exrButton.disabled = true;
+  try {
+    const started = performance.now();
+    const blob = await bakePanorama(view, target, width, (f) => showExportStatus(`굽는 중 ${Math.round(f * 100)}%`));
+    downloadBlob(blob, `${fileStem()}_${target}_${width}.exr`);
+    const seconds = ((performance.now() - started) / 1000).toFixed(1);
+    showExportStatus(`EXR ${(blob.size / 2 ** 20).toFixed(0)} MB, ${seconds}초`);
+  } catch (error) {
+    showExportStatus(`EXR을 만들지 못했습니다: ${error instanceof Error ? error.message : String(error)}`, true);
+  } finally {
+    exrButton.disabled = false;
+  }
+});
 
 // ---- Look around by dragging ------------------------------------------------
 let dragging = false;
