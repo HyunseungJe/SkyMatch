@@ -55,7 +55,7 @@ export function disposeContent(root: THREE.Object3D): void {
 
 export function createSceneContext(renderer: THREE.WebGLRenderer): SceneBuildContext {
   const assetUrl = (sceneId: string, path: string): string => {
-    const root = new URL(`${import.meta.env.BASE_URL}scenes/${encodeURIComponent(sceneId)}/`, location.origin);
+    const root = new URL(`${import.meta.env.BASE_URL}scenes/${encodeURIComponent(sceneId)}/`, document.baseURI); // BASE_URL is relative ('./') in builds
     const url = new URL(path, root);
     if (url.origin !== root.origin || !url.pathname.startsWith(root.pathname)) throw new Error('Scene assets must stay inside their local scene folder');
     return url.href;
