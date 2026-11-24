@@ -118,11 +118,11 @@ def main() -> None:
     torch.cuda.empty_cache()
     print('synthetic test:', json.dumps(synth['mae']), flush=True)
 
-    rows, real = real_dev(model, targets, a.real, size, dev)
-    with (a.run / 'real-dev.jsonl').open('w', encoding='utf-8') as f:
+    rows, real = real_dev(model, targets, a.real, size, dev, split=tag)
+    with (a.run / f'real-{tag}.jsonl').open('w', encoding='utf-8') as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + '\n')
-    print('real dev:', json.dumps(real['key']), flush=True)
+    print(f'real {tag}:', json.dumps(real['key']), flush=True)
 
     log = [json.loads(l) for l in (a.run / 'log.jsonl').read_text(encoding='utf-8').splitlines() if l.strip()]
     onnx = a.run / 'model.onnx'
