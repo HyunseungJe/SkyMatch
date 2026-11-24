@@ -6,7 +6,9 @@ Output (<dir>):
   manifest.json                 config (verbatim), git commit, shader/schema hashes, renderer, versions, counts
   <split>/images-NNNNN.npy      uint8 [n, H, W, 3] sRGB, top row first (numpy .npy, memory-mappable)
   <split>/labels-NNNNN.jsonl    one JSON line per image, same order: index, θ (thetaFile.ts params),
-                                camera, active targets, colour mode
+                                camera, active targets, colour mode; with [labels.night_visibility]
+                                also night_visibility / night_relabelled / night_effect_sampled
+                                on night-effect samples (ml/DATASET.md 6.1)
   preview-<split>.png           optional contact sheet of the first images
 Shards are written atomically and skipped on rerun, so an interrupted run resumes.
 """
@@ -29,6 +31,7 @@ import numpy as np
 from .render import Renderer, source_hashes
 from .sampler import SPLIT_STREAM, sample_item
 from .schema import REPO, Schema
+from .visibility import night_visibility
 
 
 def git_state() -> dict:
@@ -52,18 +55,47 @@ def write_shard(renderer, config, schema, split, split_id, start, count, out_dir
         return
     tmp_images = out_dir / f'images-{stem}.tmp.npy'
     images = np.lib.format.open_memmap(tmp_images, mode='w+', dtype=np.uint8, shape=(count, h, w, 3))
+    vis_cfg = config.get('labels', {}).get('night_visibility')
     lines = []
     for k in range(count):
         item = sample_item(config, schema, split_id, start + k)
-        images[k] = renderer.render(item['params'], item['camera'], w, h)
-        lines.append(json.dumps({'split': split, 'index': start + k, 'params': schema.to_json_params(item['params']),
-                                 'camera': item['camera'], 'active': item['active'], 'color_mode': item['color_mode']}))
+        params, active = item['params'], item['active']
+        img = renderer.render(params, item['camera'], w, h)
+        extra = {}
+        if vis_cfg and active['nightEffect'] and params['nightEffect'] != 0:
+            # Night effect label rule (DATASET.md 6.1): an effect that leaves no visible trace is
+            # not learnable, so the sample becomes a "none" sample: the image rendered with
+            # nightEffect = 0 and exactly that θ as its label.
+            without = dict(params, nightEffect=0)
+            img_without = renderer.render(without, item['camera'], w, h)
+            v = night_visibility(img, img_without, vis_cfg)
+            relabel = v < vis_cfg['min_diff']
+            extra = {'night_visibility': round(v, 3), 'night_relabelled': relabel,
+                     'night_effect_sampled': int(params['nightEffect'])}
+            if relabel:
+                img, params, active = img_without, without, schema.active(without)
+        images[k] = img
+        lines.append(json.dumps({'split': split, 'index': start + k, 'params': schema.to_json_params(params),
+                                 'camera': item['camera'], 'active': active, 'color_mode': item['color_mode'], **extra}))
     images.flush()
     del images
     os.replace(tmp_images, images_path)
     tmp_labels = out_dir / f'labels-{stem}.tmp.jsonl'
     tmp_labels.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')  # same bytes on every OS
     os.replace(tmp_labels, labels_path)  # labels last: a shard counts as done only when both exist
+
+
+def relabel_counts(split_dir: Path) -> dict:
+    """Night-effect samples that were checked for visibility, and how many became "none"."""
+    checked, relabelled = {1: 0, 2: 0}, {1: 0, 2: 0}
+    for p in sorted(split_dir.glob('labels-*.jsonl')):
+        for line in p.read_text(encoding='utf-8').splitlines():
+            row = json.loads(line)
+            if 'night_relabelled' in row:
+                checked[row['night_effect_sampled']] += 1
+                relabelled[row['night_effect_sampled']] += row['night_relabelled']
+    return {'checked': {'milkyWay': checked[1], 'aurora': checked[2]},
+            'relabelled': {'milkyWay': relabelled[1], 'aurora': relabelled[2]}}
 
 
 def preview(out: Path, split: str, n: int, cols: int = 8) -> None:
@@ -126,6 +158,8 @@ def main() -> None:
         'git': git_state(), 'sources': source_hashes(), 'renderer': info, 'versions': versions(),
         'seconds': round(time.time() - started, 1),
     }
+    if config.get('labels', {}).get('night_visibility'):
+        manifest['night_relabel'] = {split: relabel_counts(a.out / split) for split in counts}
     (a.out / 'manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
     for split in counts:
         if a.preview:
