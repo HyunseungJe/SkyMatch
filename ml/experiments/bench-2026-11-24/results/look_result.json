@@ -1,0 +1,19 @@
+{
+ "definition": "CMA-ES vs ML, step 4: how close the re-rendered sky looks to the original.\n\n    python ml/experiments/bench-2026-11-24/look.py --bench <bench dir> --out <json>   (needs EGL)\n\nEach method's estimated parameters (the 15 learned ones) are rendered with the image's TRUE camera\nand the label's values for everything else, at 256x192, and compared with the original image:\nSSIM (7x7 uniform window on luma, standard constants) and mean |\u0394| per channel (0..255).\nSanity check first: re-rendering the true \u03b8 must give SSIM 1.\n",
+ "true_theta_ssim": 1.0,
+ "ml": {
+  "ssim_mean": 0.9472,
+  "ssim_ge_0.9": 0.81,
+  "abs_diff_mean": 6.98
+ },
+ "cmaes": {
+  "ssim_mean": 0.8927,
+  "ssim_ge_0.9": 0.575,
+  "abs_diff_mean": 16.45
+ },
+ "cmaes_true_camera": {
+  "ssim_mean": 0.9147,
+  "ssim_ge_0.9": 0.69,
+  "abs_diff_mean": 11.0
+ }
+}

@@ -1,0 +1,52 @@
+{
+ "definition": "Constant baseline through the SAME loss and metrics as training (train.evaluate):\nregress = per-target mean of the train labels over the samples where the target is active,\nclassify = log of the train class prior (over samples where the night effect is active).",
+ "class_prior": [
+  0.6308,
+  0.2018,
+  0.1674
+ ],
+ "val": {
+  "loss_regress": 0.22466921837329865,
+  "loss_classify": 0.9369668700218201,
+  "loss_total": 1.1616360883951187,
+  "mae": {
+   "sunElevation": 15.5559,
+   "zenithColor": 61.29,
+   "horizonColor": 68.79,
+   "sunGlowColor": 62.54,
+   "haze": 0.2263,
+   "cloudCover": 0.2864,
+   "cloudDensity": 0.8001,
+   "cloudScale": 0.4467,
+   "cloudSoftness": 0.2528,
+   "storm": 0.2562,
+   "stars": 0.5005,
+   "milkyWayBrightness": 0.4768,
+   "auroraIntensity": 0.7573,
+   "auroraHue": 0.2557,
+   "nightEffect_acc": 0.6112
+  }
+ },
+ "test": {
+  "loss_regress": 0.2243318906545639,
+  "loss_classify": 0.9351478769302368,
+  "loss_total": 1.1594797675848008,
+  "mae": {
+   "sunElevation": 15.5008,
+   "zenithColor": 60.97,
+   "horizonColor": 68.64,
+   "sunGlowColor": 62.56,
+   "haze": 0.2283,
+   "cloudCover": 0.2866,
+   "cloudDensity": 0.7992,
+   "cloudScale": 0.4475,
+   "cloudSoftness": 0.2513,
+   "storm": 0.2546,
+   "stars": 0.4979,
+   "milkyWayBrightness": 0.4769,
+   "auroraIntensity": 0.7387,
+   "auroraHue": 0.2505,
+   "nightEffect_acc": 0.6112
+  }
+ }
+}
