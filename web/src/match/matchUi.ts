@@ -122,7 +122,7 @@ export function createMatchUi(hooks: MatchUiHooks): { open: (file: Blob, name?: 
       thumb = resizeImage(photo, tw, th);
       drawPhoto();
       if (methodSelect.value === 'ml') {
-        status.textContent = '모델을 불러오는 중입니다… (처음 한 번, 약 45MB)';
+        status.textContent = '모델을 불러오는 중입니다… (처음 한 번, 약 95MB)';
         await loadModel();
         if (controller !== running) return;
         status.textContent = '추정하는 중입니다…';

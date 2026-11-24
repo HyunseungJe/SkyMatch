@@ -125,30 +125,31 @@
     "name": "nightEffect",
     "n": 3
   },
+  "arch": "resnet50",
   "trained": {
-    "run": "demo-r18-128",
-    "epoch": 6,
+    "run": "r50-aug3",
+    "epoch": 27,
     "git": {
-      "commit": "9dddc82b8364af536fffbe4d283d303f54ecd73f",
-      "dirty": true
+      "commit": "4cf34279553260f2718bc85ce757cf3774ab877b",
+      "dirty": false
     },
-    "dataset": "sky-v1",
+    "dataset": "sky-v2",
     "val_mae": {
-      "sunElevation": 6.0381,
-      "zenithColor": 17.74,
-      "horizonColor": 35.85,
-      "sunGlowColor": 49.61,
-      "haze": 0.1376,
-      "cloudCover": 0.0855,
-      "cloudDensity": 0.3821,
-      "cloudScale": 0.193,
-      "cloudSoftness": 0.2007,
-      "storm": 0.1336,
-      "stars": 0.3363,
-      "milkyWayBrightness": 0.4123,
-      "auroraIntensity": 0.7361,
-      "auroraHue": 0.1831,
-      "nightEffect_acc": 0.8504
+      "sunElevation": 3.8875,
+      "zenithColor": 11.62,
+      "horizonColor": 25.94,
+      "sunGlowColor": 40.95,
+      "haze": 0.1007,
+      "cloudCover": 0.0629,
+      "cloudDensity": 0.2941,
+      "cloudScale": 0.1587,
+      "cloudSoftness": 0.1845,
+      "storm": 0.0998,
+      "stars": 0.304,
+      "milkyWayBrightness": 0.3374,
+      "auroraIntensity": 0.466,
+      "auroraHue": 0.1161,
+      "nightEffect_acc": 0.9821
     }
   }
 }

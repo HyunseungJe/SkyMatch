@@ -42,7 +42,7 @@ function modelUrl(file: string): string {
   return new URL(`${import.meta.env.BASE_URL}${MODEL_DIR}${file}`, document.baseURI).href;
 }
 
-/** Loads onnxruntime and the model once (about 45 MB, cached by the browser afterwards). */
+/** Loads onnxruntime and the model once (about 95 MB, cached by the browser afterwards). */
 export function loadModel() {
   loading ??= (async () => {
     const [ort, info] = await Promise.all([

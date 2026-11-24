@@ -40,13 +40,15 @@ The web UI is in Korean.
 ## The ML model
 
 - **Training data:** 200,000 synthetic images rendered with the shader itself (180,000 train, 10,000 validation, 10,000 test). Real photos are never used for training, only for evaluation.
-  - The dataset is defined by one config file, [`ml/datasets/v1.toml`](ml/datasets/v1.toml). The same config always gives the same data.
+  - The dataset is defined by one config file, [`ml/datasets/v2.toml`](ml/datasets/v2.toml). The same config always gives the same data. v2 is v1 plus one label rule: a milky way or aurora that is not visible in the image is labelled "none".
   - How it is made, step by step (in Korean): [`ml/DATASET.md`](ml/DATASET.md)
-- **Model:** ResNet-18 starting from ImageNet weights. It takes a 128×96 image, regresses the sky parameters and classifies the night effect.
+- **Model:** a ResNet starting from ImageNet weights. It takes a 128×96 image, regresses the sky parameters and classifies the night effect.
   - Loss, augmentation and run records (in Korean): [`ml/TRAINING.md`](ml/TRAINING.md)
-- **Current web model:** `demo-r18-128`, the first demo model (10 epochs, about 10 minutes of training).
-  - Error on the synthetic test set: sun elevation about 6°, zenith colour about 18/255 per channel, night effect accuracy about 85 %.
-  - Known weakness: it often fails to recognise real night photos as night.
+  - Model selection: the epoch with the lowest validation loss, early stopping after 5 epochs without a new lowest; between candidates, again the lowest validation loss.
+- **Current web model:** `r50-aug3`, ResNet-50 with flip, blur and noise augmentation, trained on dataset v2 (epoch 28 of 30). The model file is about 95 MB.
+  - Synthetic test set: sun elevation error 3.8°, zenith colour about 12/255 per channel, night effect accuracy 97 %.
+  - Against the CMA-ES optimiser on 200 synthetic test images: sun elevation error 3.8° vs 14.7°, SSIM of the re-rendered sky 0.95 vs 0.89, about 100× faster. Details: [`ml/experiments/bench-2026-11-24/`](ml/experiments/bench-2026-11-24/README.md)
+  - Known weakness: it recognises only about a third of real night photos as night (21 of 68 in the real-photo test set).
 
 ## Running it yourself
 
