@@ -14,6 +14,8 @@ Loss (equal weights, nothing else):
   total     regress + classify
 Augmentation: skymatch_ml/augment.py (seeded per sample and epoch): silhouette (default on), then
 the optional --aug steps in the fixed order flip, blur, noise.
+Model selection: the epoch with the lowest validation loss (regress + classify) is kept as
+best.pt; with --patience N training stops once N epochs pass without a new lowest value.
 Run dir: run.json (args, git, dataset manifest, versions), log.jsonl (per epoch), best.pt,
 model.onnx + model.json (web inference), written at the end.
 """
@@ -216,6 +218,9 @@ def main() -> None:
     ap.add_argument('--arch', choices=sorted(ARCHS), default='resnet18')
     ap.add_argument('--no-silhouette', action='store_true', help='turn the silhouette augmentation off')
     ap.add_argument('--aug', default='', help='extra augmentation steps, comma list of flip,blur,noise')
+    ap.add_argument('--patience', type=int, default=0,
+                    help='early stopping: stop after this many epochs without a new lowest validation loss '
+                         '(0 = run all --epochs). The LR schedule still spans --epochs.')
     a = ap.parse_args()
     extra = parse_extra(a.aug)
 
@@ -250,6 +255,8 @@ def main() -> None:
     log = (a.out / 'log.jsonl').open('a', encoding='utf-8')
     gen = torch.Generator(device='cpu').manual_seed(a.seed)
     best = math.inf
+    best_epoch = -1
+    stopped = None
     step = 0
     for epoch in range(a.epochs):
         e0 = time.time()
@@ -278,9 +285,15 @@ def main() -> None:
         print(json.dumps(rec), flush=True)
         val_total = ev['loss_regress'] + ev['loss_classify']
         if val_total < best:
-            best = val_total
+            best, best_epoch = val_total, epoch
             torch.save({'model': model.state_dict(), 'epoch': epoch, 'val': ev, 'size': size, 'arch': a.arch},
                        a.out / 'best.pt')
+        elif a.patience and epoch - best_epoch >= a.patience:
+            stopped = {'epoch': epoch, 'best_epoch': best_epoch, 'patience': a.patience}
+            print(f'early stop after epoch {epoch}: no lower validation loss since epoch {best_epoch}', flush=True)
+            break
+    run['early_stop'] = stopped
+    (a.out / 'run.json').write_text(json.dumps(run, indent=2, ensure_ascii=False), encoding='utf-8')
     ckpt = torch.load(a.out / 'best.pt', map_location='cpu')
     model.load_state_dict(ckpt['model'])
     export_onnx(model, targets, size, a.out, {'arch': a.arch, 'trained': {'run': a.out.name, 'epoch': ckpt['epoch'],

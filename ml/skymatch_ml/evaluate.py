@@ -3,7 +3,8 @@
     python -m skymatch_ml.evaluate --run <run dir> --data <dataset dir> --real <real photo set dir>
 
 1. Synthetic test: best.pt on the whole `test` split with train.evaluate() (no augmentation).
-2. Real dev: every photo with split == dev in <real>/split.csv (the test split is never read),
+2. Real dev: every photo with split == dev in <real>/split.csv (the test split is read only with
+   --real-split test, the single final evaluation of the chosen model -> eval-test.json),
    pre-processed like the web app (web/src/match/image.ts loadPhoto + mlEstimate.ts modelInput):
    EXIF orientation -> longest side at most 1024 -> centre crop to the model's 4:3 -> area
    (box) resize to the run's input size -> sRGB [0, 1]. Inference in float32 like the web.
@@ -59,9 +60,9 @@ def load_model(run: Path, targets: Targets, dev):
     return model.to(dev).eval(), ckpt, run_json, arch
 
 
-def real_dev(model, targets: Targets, real: Path, size, dev) -> tuple[list[dict], dict]:
+def real_dev(model, targets: Targets, real: Path, size, dev, split: str = 'dev') -> tuple[list[dict], dict]:
     w, h = size
-    rows = [r for r in csv.DictReader((real / 'split.csv').open(encoding='utf-8')) if r['split'] == 'dev']
+    rows = [r for r in csv.DictReader((real / 'split.csv').open(encoding='utf-8')) if r['split'] == split]
     out = []
     for s in range(0, len(rows), 64):
         chunk = rows[s:s + 64]
@@ -100,7 +101,10 @@ def main() -> None:
     ap.add_argument('--run', type=Path, required=True)
     ap.add_argument('--data', type=Path, required=True)
     ap.add_argument('--real', type=Path, required=True)
+    ap.add_argument('--real-split', choices=['dev', 'test'], default='dev',
+                    help='test = the one final evaluation of the chosen model; writes eval-test.json / real-test.jsonl')
     a = ap.parse_args()
+    tag = a.real_split
     t0 = time.time()
     dev = torch.device('cuda')
     targets = Targets()
@@ -130,11 +134,12 @@ def main() -> None:
         'model_onnx_bytes': onnx.stat().st_size if onnx.exists() else None,
         'synthetic_test': {'loss_regress': synth['loss_regress'], 'loss_classify': synth['loss_classify'],
                            'mae': synth['mae']},
-        'real_dev': real,
+        f'real_{tag}': real,
         'eval_seconds': round(time.time() - t0, 1),
     }
-    (a.run / 'eval.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding='utf-8')
-    print(f'-> {a.run / "eval.json"}', flush=True)
+    out = a.run / ('eval.json' if tag == 'dev' else f'eval-{tag}.json')
+    out.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding='utf-8')
+    print(f'-> {out}', flush=True)
 
 
 if __name__ == '__main__':
