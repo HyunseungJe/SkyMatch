@@ -44,3 +44,27 @@ python ml/experiments/bench-2026-11-24/examples.py --real ~/work/skymatch-data/r
 ```
 
 `examples.py`는 보고서 그림 1(실사진 6장과 추정한 하늘)을 만듭니다. 사진은 모두 위키미디어 공용의 CC0 사진입니다(`docs/images/CREDITS.md`).
+
+## 학습 곡선 그림
+
+```sh
+uv run ml/experiments/bench-2026-11-24/learning_curve.py --logs ml/experiments/bench-2026-11-24/results/logs --out learning-curve.png
+```
+
+보고서의 학습 곡선(검증 손실 = 회귀 + 분류, 에폭별)을 그립니다. matplotlib은 ml 패키지 의존성이 아니라서 `uv run`이 이 스크립트에만 설치합니다. 한글 글꼴(Windows는 Malgun Gothic, Linux는 NanumGothic 또는 Noto Sans CJK KR)이 필요합니다.
+
+## 저장소에 함께 넣은 실험 기록
+
+모델 가중치와 데이터셋은 크기 때문에 저장소에 없습니다. 그 대신 보고서 수치와 그림을 다시 계산하는 데 필요한 작은 기록 파일을 `results/`에 넣었습니다.
+
+| 파일 | 원래 위치 | 쓰는 곳 |
+|---|---|---|
+| `results/logs/r50-aug3.jsonl` | `final-2026-11-24/r50-aug3/log.jsonl` | 학습 곡선 (최종 모델, 28에폭 0.159) |
+| `results/logs/r50.jsonl` | `final-2026-11-24/r50/log.jsonl` | 학습 곡선 (21에폭 조기 종료) |
+| `results/logs/r18-e30.jsonl` | `v2-2026-11-24/r18-e30/log.jsonl` | 학습 곡선 |
+| `results/cmaes_pred.json` | 비교 폴더 `$B` | CMA-ES 행 (`look.py`, `look_all.py`, `score.py`). 브라우저 실행 결과라 다시 돌리면 GPU에 따라 조금 다를 수 있어, 보고서에 쓴 원본을 남깁니다 |
+| `results/cmaes_cam_pred.json` | 비교 폴더 `$B` | CMA-ES + 정답 카메라 행 (`look.py`, `score.py`) |
+
+CMA-ES를 브라우저에서 다시 돌리지 않으려면, `export.py`로 만든 `$B`에 이 두 파일을 복사한 뒤 `look.py`/`look_all.py`/`score.py`를 실행합니다.
+
+모델을 다시 학습하면(`ml/experiments/final-2026-11-24.sh`, `v2-2026-11-24.sh`) 같은 시드를 써도 GPU 연산(`cudnn.benchmark`) 때문에 소수점 아래 값이 조금 다를 수 있습니다. 처리 시간도 PC 성능에 따라 달라집니다.
