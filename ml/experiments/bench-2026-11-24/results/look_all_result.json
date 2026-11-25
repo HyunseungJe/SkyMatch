@@ -1,0 +1,47 @@
+{
+ "definition": "Look-based score for every method on the same synthetic test images (the final report's table).\n\n    python ml/experiments/bench-2026-11-24/look_all.py --bench <bench dir> --data <dataset v2>         --run resnet18=<r18 run> --run resnet50=<r50 run> --run final=<r50-aug3 run> --out <json>   (needs EGL)\n\nSame definition as look.py: each method's 15 learned values are rendered with the image's TRUE camera\n(label values for everything else) at 256x192 and compared with the original image: SSIM (7x7 window\non luma, standard constants) and mean |difference| per channel (0..255).\n\nMethods: the mean baseline (train-label means; night effect \"none\"), each --run model (same\n128x96 box-downsampled input as training), and CMA-ES from cmaes_pred.json in the bench dir.\n",
+ "n": 200,
+ "mean_theta": {
+  "sunElevation": 10.579028981983292,
+  "haze": 0.3242756753555528,
+  "cloudCover": 0.4000251797611099,
+  "cloudDensity": 1.4867565129099334,
+  "cloudScale": 0.6969294711418238,
+  "cloudSoftness": 0.5000920160506017,
+  "storm": 0.20007255334722474,
+  "stars": 0.9965576356256247,
+  "milkyWayBrightness": 1.0941216839902348,
+  "auroraIntensity": 1.5450736067573243,
+  "auroraHue": 0.5018982506075771,
+  "zenithColor": 5991043,
+  "horizonColor": 8420996,
+  "sunGlowColor": 10587508,
+  "nightEffect": 0
+ },
+ "true_theta_ssim_first10": 1.0,
+ "mean_baseline": {
+  "ssim_mean": 0.7525,
+  "ssim_ge_0.9": 0.235,
+  "abs_diff_mean": 46.55
+ },
+ "resnet18": {
+  "ssim_mean": 0.9322,
+  "ssim_ge_0.9": 0.765,
+  "abs_diff_mean": 10.79
+ },
+ "resnet50": {
+  "ssim_mean": 0.9442,
+  "ssim_ge_0.9": 0.825,
+  "abs_diff_mean": 8.44
+ },
+ "final": {
+  "ssim_mean": 0.9472,
+  "ssim_ge_0.9": 0.81,
+  "abs_diff_mean": 6.98
+ },
+ "cmaes": {
+  "ssim_mean": 0.8927,
+  "ssim_ge_0.9": 0.575,
+  "abs_diff_mean": 16.45
+ }
+}

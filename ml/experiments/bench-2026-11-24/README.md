@@ -35,6 +35,10 @@ python ml/experiments/bench-2026-11-24/export.py --data $D --run $RUN --out $B
 # 내려받은 cmaes_pred.json, cmaes_cam_pred.json을 $B에 두기 (끝나면 web/public/_bench 삭제)
 python ml/experiments/bench-2026-11-24/score.py --bench $B --out results/param_result.json
 python ml/experiments/bench-2026-11-24/look.py --bench $B --out results/look_result.json       # EGL 필요
+# 보고서 결과 표: 평균값·ResNet-18·ResNet-50·최종·CMA-ES를 같은 200장에서 SSIM·평균 색 차이로 채점 (EGL 필요)
+python ml/experiments/bench-2026-11-24/look_all.py --bench $B --data $D \
+  --run resnet18=~/work/skymatch-runs/v2-2026-11-24/r18-e30 --run resnet50=~/work/skymatch-runs/final-2026-11-24/r50 \
+  --run final=$RUN --out results/look_all_result.json
 python ml/experiments/bench-2026-11-24/ml_time.py --model $RUN/model.onnx --bench $B
 python ml/experiments/bench-2026-11-24/examples.py --real ~/work/skymatch-data/real-v1 --run $RUN --out <그림 폴더>
 ```
